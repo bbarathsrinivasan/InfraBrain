@@ -10,7 +10,7 @@ Architecture:
 
 Run:
   pip install -r requirements.txt
-  cp .env.example .env   # add your ANTHROPIC_API_KEY
+  cp .env.example .env   # add your GEMINI_API_KEY
   python main.py         # or: uvicorn main:app --reload --port 8002
 """
 
@@ -22,7 +22,6 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Optional
 
-import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware

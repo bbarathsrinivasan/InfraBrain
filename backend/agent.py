@@ -1,31 +1,33 @@
 """
-Task agent — LLM-powered diagnosis with KG-augmented prompts.
+Task agent — Gemini-powered diagnosis with KG-augmented prompts.
 
 Two retrieval modes (mirrors the meta-agent evolution):
   gen-0  : exact-label lookup (high miss rate on near-miss signatures)
   gen-4+ : similarity-ranked retrieval, corrections ranked first
 
-askAgent() is the SRE-console chat handler — streaming.
-diagnose() is the incident-diagnosis call — structured JSON output.
+ask_agent_stream() — SRE-console chat, streaming token-by-token via SSE.
+diagnose()         — incident diagnosis, structured JSON output.
 
-To wire a different model or provider: change MODEL and the client init.
+Model: gemini-2.0-flash (fast) — switch to gemini-2.5-flash/pro for richer reasoning.
 """
 import os
 import json
-import anthropic
+from google import genai
+from google.genai import types
 from kg import retrieve_similar
 
-MODEL = "claude-sonnet-4-5"          # swap to claude-opus-4-5 for richer reasoning
+MODEL = "gemini-2.0-flash"       # gemini-2.5-flash · gemini-2.5-pro for stronger reasoning
 
-_client: anthropic.AsyncAnthropic | None = None
+_client: genai.Client | None = None
 
-def _get_client() -> anthropic.AsyncAnthropic:
+
+def _get_client() -> genai.Client:
     global _client
     if _client is None:
-        key = os.environ.get("ANTHROPIC_API_KEY")
+        key = os.environ.get("GEMINI_API_KEY")
         if not key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set — add it to backend/.env")
-        _client = anthropic.AsyncAnthropic(api_key=key)
+            raise RuntimeError("GEMINI_API_KEY not set — add it to backend/.env")
+        _client = genai.Client(api_key=key)
     return _client
 
 
@@ -50,10 +52,10 @@ def _build_diagnose_prompt(node: dict, window: list[dict], gen: int, hits: list[
                          f"rejected={c['rejected']} → applied={c['applied']}  ctx={c['context']}\n")
 
     gen_hint = (
-        "You have access to KG corrections — if a correction contradicts your hypothesis, "
-        "you MUST explain why before deciding."
+        "You have access to KG corrections above — if any correction contradicts "
+        "your hypothesis, you MUST explain why before deciding."
         if gen >= 4 else
-        "Use your base knowledge only."
+        "Use base telemetry knowledge only — ignore any KG data."
     )
 
     return f"""You are InfraBrain Task Agent (gen-{gen}), diagnosing a GPU datacenter node.
@@ -66,60 +68,52 @@ JOB: {node['job']}
 AVAILABLE ACTIONS: ramp_fans | throttle_job | migrate_workload | drain_node | restart_node | escalate | no_action
 
 CRITICAL DIAGNOSTIC NOTE:
-  Fan failure signature: fan↓ sustained + temp↑ while util is FALLING (thermal throttling).
-  CPU-overload signature: util↑ sustained + temp↑ with fan STABLE or rising.
-  Memory-leak signature:  mem↑ monotonic + temp rising + util flat.
-  These look similar at first glance — the fan/mem trends are the discriminating signal.
+  Fan failure: fan↓ sustained + temp↑ while util FALLS (thermal throttling — deceptive!).
+  CPU overload: util↑ sustained + temp↑, fan STABLE or rising.
+  Memory leak:  mem↑ monotonic + temp rising + util flat.
 
 {gen_hint}
 
-Respond with ONLY valid JSON — no markdown, no explanation outside the JSON:
+Return ONLY a JSON object — no markdown fences, no extra text:
 {{
-  "diagnosis": "<concise root-cause, ≤12 words>",
-  "action":    "<one action from the list above>",
-  "conf":      <float 0.0–1.0>,
+  "diagnosis": "<root-cause, ≤12 words>",
+  "action":    "<one action from the list>",
+  "conf":      <float 0.0-1.0>,
   "evidence":  ["<observation 1>", "<observation 2>", "<observation 3>"]
 }}"""
 
 
 async def diagnose(node: dict, window: list[dict], gen: int) -> dict:
     """
-    Call the LLM to diagnose a node.
-    Returns a suggestion dict: {diagnosis, action, conf, evidence}
-    Falls back to scripted response on any error.
+    Call Gemini to diagnose a node.
+    Returns {diagnosis, action, conf, evidence}. Falls back to scripted on error.
     """
-    # Build signature string for KG retrieval
-    fan_declining = (node["fan"] < 50)
-    mem_high      = (node["mem"] > 78)
-    if fan_declining:
-        sig = f"temp↑/fan↓ @ {node['id']}"
-    elif mem_high:
-        sig = f"temp↑/mem↑ @ {node['id']}"
-    else:
-        sig = f"temp↑/util↑ @ {node['id']}"
+    fan_declining = node["fan"] < 50
+    mem_high      = node["mem"] > 78
+    sig = (f"temp↑/fan↓ @ {node['id']}"  if fan_declining else
+           f"temp↑/mem↑ @ {node['id']}"  if mem_high      else
+           f"temp↑/util↑ @ {node['id']}")
 
-    # Retrieval — gen-0 exact only (misses near-miss sigs), gen-4 similarity
     all_hits = retrieve_similar(sig, k=5)
+    # gen-0: only surface near-identical matches (> 0.8); gen-4+: full similarity
     hits = [h for h in all_hits if h["sim"] > 0.8] if gen < 4 else all_hits
 
     prompt = _build_diagnose_prompt(node, window, gen, hits)
 
     try:
         client = _get_client()
-        msg = await client.messages.create(
+        response = await client.aio.models.generate_content(
             model=MODEL,
-            max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",   # guaranteed JSON from Gemini
+                max_output_tokens=512,
+                temperature=0.2,
+            ),
         )
-        raw = msg.content[0].text.strip()
-        # Strip accidental markdown fences
-        if "```" in raw:
-            raw = raw.split("```")[1].lstrip("json").strip()
-            raw = raw.split("```")[0].strip()
+        result = json.loads(response.text)
 
-        result = json.loads(raw)
-
-        # Append KG evidence if similarity-ranked corrections were used
+        # Append KG evidence note when corrections were retrieved
         if hits and gen >= 4:
             top = hits[0]
             result.setdefault("evidence", []).append(
@@ -133,10 +127,10 @@ async def diagnose(node: dict, window: list[dict], gen: int) -> dict:
 
 
 def _fallback(node: dict, gen: int, reason: str = "") -> dict:
-    """Scripted fallback — identical to the in-browser buildSuggestion()."""
+    """Scripted fallback — mirrors the in-browser buildSuggestion()."""
     fan_low  = node.get("fan", 60) < 45
     mem_high = node.get("mem", 40) > 80
-    note     = f" [LLM fallback: {reason[:60]}]" if reason else ""
+    note     = f" [Gemini fallback: {reason[:60]}]" if reason else ""
 
     if gen >= 4:
         if fan_low:
@@ -146,7 +140,7 @@ def _fallback(node: dict, gen: int, reason: str = "") -> dict:
                 "conf":      0.91,
                 "evidence":  [
                     f"fan {node['fan']:.0f}% — sustained decline (leading indicator)",
-                    f"temp slope rising while util falling (thermal throttling, not load)",
+                    "temp rising while util falling — thermal throttling, not load",
                     f"KG correction: identical sig — throttle_job rejected, ramp_fans applied{note}",
                 ],
             }
@@ -178,14 +172,15 @@ def _fallback(node: dict, gen: int, reason: str = "") -> dict:
 
 async def ask_agent_stream(text: str, context: dict):
     """
-    Async generator that streams SRE-console replies token-by-token.
+    Async generator — streams SRE-console reply token-by-token via Gemini.
 
     context keys: focusNode, incident, node, corrections, gen
 
-    ── HOW TO REPLACE WITH A DIFFERENT PROVIDER ──────────────────────────
-    Replace the `async with client.messages.stream(...)` block with your
-    provider's streaming call.  Yield each text token in the inner loop.
-    The FastAPI SSE handler above doesn't care how the tokens arrive.
+    ── HOW TO SWITCH MODEL ────────────────────────────────────────────────
+    Change the MODULE-LEVEL `MODEL` constant above.
+    gemini-2.0-flash   → fast, low latency (default)
+    gemini-2.5-flash   → better reasoning, slightly slower
+    gemini-2.5-pro     → best quality, for complex diagnoses
     """
     node_id     = context.get("focusNode", "unknown")
     incident    = context.get("incident")
@@ -193,42 +188,47 @@ async def ask_agent_stream(text: str, context: dict):
     corrections = context.get("corrections", [])
     gen         = context.get("gen", 0)
 
-    # Build system context
     inc_ctx = ""
     if incident:
         inc_ctx = (f"\n\nACTIVE INCIDENT on {node_id}: stage={incident.get('stage')}, "
                    f"type={incident.get('faultType','unknown')}")
         sug = incident.get("suggestion")
         if sug:
-            inc_ctx += f"\nCurrent suggestion: {sug.get('diagnosis')} → {sug.get('action')} (conf {sug.get('conf')})"
+            inc_ctx += (f"\nCurrent diagnosis: {sug.get('diagnosis')} → "
+                        f"{sug.get('action')} (conf {sug.get('conf')})")
 
     kg_ctx = ""
     if corrections:
         last = corrections[-1]
-        kg_ctx = (f"\n\nKG: {len(corrections)} correction(s). "
+        kg_ctx = (f"\n\nKG: {len(corrections)} operator correction(s). "
                   f"Most recent: rejected {last.get('rejected')} → applied {last.get('applied')}.")
 
-    system = f"""You are InfraBrain (gen-{gen}), an AI SRE assistant for a GPU datacenter.
-
-Focus node: {node_id}
-State: temp={node.get('temp','?')}°C  util={node.get('util','?')}%  fan={node.get('fan','?')}%  mem={node.get('mem','?')}%{inc_ctx}{kg_ctx}
-
-Rules:
-- Be concise (≤4 sentences). Technical, grounded in current node state.
-- For action commands (/ramp_fans, /migrate, etc.), confirm what was queued and the expected metric effect.
-- For question commands (/explain, /history, /status), give a direct factual answer.
-- If something is uncertain, say so — don't hallucinate telemetry.
-"""
+    system = (
+        f"You are InfraBrain (gen-{gen}), an AI SRE assistant for a GPU datacenter.\n\n"
+        f"Focus node: {node_id}\n"
+        f"State: temp={node.get('temp','?')}°C  util={node.get('util','?')}%  "
+        f"fan={node.get('fan','?')}%  mem={node.get('mem','?')}%"
+        f"{inc_ctx}{kg_ctx}\n\n"
+        "Rules:\n"
+        "- Be concise (≤4 sentences). Ground answers in the current node state.\n"
+        "- For action commands, confirm what was queued and its expected metric effect.\n"
+        "- For questions (/explain, /history, /status), give a direct factual answer.\n"
+        "- Never hallucinate telemetry values — if uncertain, say so."
+    )
 
     try:
         client = _get_client()
-        async with client.messages.stream(
+        async for chunk in await client.aio.models.generate_content_stream(
             model=MODEL,
-            max_tokens=300,
-            system=system,
-            messages=[{"role": "user", "content": text}],
-        ) as stream:
-            async for chunk in stream.text_stream:
-                yield chunk
+            contents=text,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=300,
+                temperature=0.4,
+            ),
+        ):
+            if chunk.text:
+                yield chunk.text
+
     except Exception as exc:
-        yield f"[Agent error: {exc}. Check ANTHROPIC_API_KEY and model availability.]"
+        yield f"[Agent error: {exc}. Check GEMINI_API_KEY and model availability.]"
