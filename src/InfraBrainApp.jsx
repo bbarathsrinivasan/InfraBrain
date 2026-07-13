@@ -999,6 +999,13 @@ function askAgent(ctx) {
 }
 
 /* ── ROOT APP ────────────────────────────────────────────────────────── */
+/* ── BACKEND CONFIG ───────────────────────────────────────────────────────
+   Set VITE_BACKEND_WS / VITE_BACKEND_HTTP in .env to enable real backend.
+   Leave unset → frontend-only demo mode (in-browser sim + scripted agent).
+   ──────────────────────────────────────────────────────────────────────── */
+const BACKEND_WS   = import.meta.env.VITE_BACKEND_WS   || null;
+const BACKEND_HTTP = import.meta.env.VITE_BACKEND_HTTP  || null;
+
 export default function InfraBrainApp() {
   const [tab,setTab]         = useState("Observability");
   const [running,setRunning] = useState(false);
@@ -1013,14 +1020,136 @@ export default function InfraBrainApp() {
   const [pairs,setPairs]       = useState([]);
   const [chat,setChat] = useState([{role:"sys",text:'SRE console ready. Ask a question, or type "/" for actions.'}]);
   const [log,setLog] = useState([{t:0,kind:"sys",text:"Simulator ready. Press RUN — faults fire at t010 (R2-N5 fan) and t022 (R3-N2 mem)."}]);
-  const histRef = useRef({});
-  const stRef   = useRef({});
-  stRef.current = {nodes,incidents,repairs,agentGen,tick,kgCorr,pairs,focusNode};
+  const [backendStatus, setBackendStatus] = useState(BACKEND_WS?"connecting":"demo");
+
+  const histRef  = useRef({});
+  const stRef    = useRef({});
+  const wsRef    = useRef(null);
+  const chatRef  = useRef(null); // for streaming chat updates
+  stRef.current  = {nodes,incidents,repairs,agentGen,tick,kgCorr,pairs,focusNode};
+
+  /* ── WebSocket — connect to backend if configured ────────────────────── */
+  useEffect(()=>{
+    if (!BACKEND_WS) return;
+    let retryTimer;
+
+    function connect(){
+      const ws = new WebSocket(BACKEND_WS);
+      wsRef.current = ws;
+
+      ws.onopen  = () => setBackendStatus("connected");
+      ws.onerror = () => setBackendStatus("error");
+      ws.onclose = () => {
+        setBackendStatus("reconnecting");
+        retryTimer = setTimeout(connect, 3000);
+      };
+      ws.onmessage = e => {
+        try { handleBackendMessage(JSON.parse(e.data)); }
+        catch(err) { console.warn("WS parse error", err); }
+      };
+    }
+
+    connect();
+    return () => { wsRef.current?.close(); clearTimeout(retryTimer); };
+  }, []); // eslint-disable-line
+
+  function sendWS(msg){
+    if (wsRef.current?.readyState === WebSocket.OPEN){
+      wsRef.current.send(JSON.stringify(msg));
+      return true;
+    }
+    return false;
+  }
+
+  function handleBackendMessage(msg){
+    switch(msg.type){
+      case "init":
+        setNodes(msg.nodes||[]);
+        setTick(msg.t||0);
+        setIncidents(msg.incidents||[]);
+        setRepairs(msg.repairs||[]);
+        setLog(msg.log||[]);
+        setAgentGen(msg.agentGen||0);
+        setEpisodes(msg.episodes||37);
+        if(msg.corrections) _hydrateKgCorr(msg.corrections);
+        if(msg.pairs) setPairs(msg.pairs);
+        setRunning(msg.running||false);
+        break;
+      case "tick":
+        setNodes(msg.nodes||[]);
+        setTick(msg.t||0);
+        if(msg.incidents) setIncidents(msg.incidents);
+        // hydrate history for telemetry charts
+        (msg.nodes||[]).forEach(nd=>{
+          const h=(histRef.current[nd.id]||=[]);
+          h.push({t:msg.t,temp:nd.temp,util:nd.util,fan:nd.fan,mem:nd.mem});
+          if(h.length>90) h.shift();
+          histRef.current[nd.id]=h;
+        });
+        break;
+      case "incident_update": {
+        const inc=msg.incident;
+        setIncidents(prev=>{
+          const idx=prev.findIndex(i=>i.id===inc.id);
+          return idx>=0 ? prev.map((i,j)=>j===idx?inc:i) : [...prev,inc];
+        });
+        // Auto-focus newly-detected incidents
+        if(inc.stage==="analyzing")
+          setFocusNode(f=>(!f||f===FAULT_NODE)?inc.node:f);
+        break;
+      }
+      case "repairs":
+        setRepairs(msg.repairs||[]);
+        break;
+      case "log":
+        if(msg.entry) setLog(l=>[msg.entry,...l].slice(0,90));
+        break;
+      case "kg_update":
+        if(msg.correction) setKgCorr(k=>{
+          const pos=k.length;
+          return [...k,{
+            ...msg.correction,
+            kind:"correction",
+            label:`override #C${pos+1}`,
+            x:120+(pos%4)*60, y:290,
+            ctx:msg.correction.context||"",
+          }];
+        });
+        if(msg.pair) setPairs(p=>[...p,msg.pair]);
+        if(msg.allCorrections) _hydrateKgCorr(msg.allCorrections);
+        break;
+      case "reset":
+        setNodes(msg.nodes||freshNodes());
+        setTick(0); setIncidents([]); setRepairs([]);
+        histRef.current={};
+        if(msg.log) setLog(msg.log);
+        if(msg.gen!==undefined) setAgentGen(msg.gen);
+        break;
+      case "running":
+        setRunning(!!msg.running);
+        break;
+      case "escalation":
+        addChat("sys",`⚑ ${msg.message||"Escalated to on-call (L2)."}`);
+        break;
+      default: break;
+    }
+  }
+
+  function _hydrateKgCorr(corrections){
+    setKgCorr(corrections.map((c,i)=>({
+      ...c,
+      kind:"correction",
+      label:`override #C${i+1}`,
+      x:120+(i%4)*60, y:290,
+      ctx:c.context||"",
+    })));
+  }
 
   const addLog = useCallback((kind,text,node) =>
     setLog(l=>[{t:stRef.current.tick,kind,text,node},...l].slice(0,90)),[]);
   const addChat = useCallback((role,text) =>
     setChat(c=>[...c,{role,text}].slice(-60)),[]);
+  const backendConnected = backendStatus==="connected";
 
   function buildSuggestion(n, gen, faultType, nodeId) {
     const nd=n.find(x=>x.id===nodeId)||{};
@@ -1058,7 +1187,8 @@ export default function InfraBrainApp() {
   }
 
   useEffect(()=>{
-    if (!running) return;
+    // In-browser sim — disabled when backend WebSocket is connected
+    if (!running || backendConnected) return;
     const h = setInterval(()=>{
       const S = stRef.current;
       const t = S.tick+1;
@@ -1140,7 +1270,7 @@ export default function InfraBrainApp() {
       setRepairs(reps);
     },650);
     return ()=>clearInterval(h);
-  },[running,addLog]);
+  },[running,backendConnected,addLog]);
 
   function updateIncident(node, patch){
     setIncidents(list=>list.map(i=>i.node===node && i.stage!=="resolved" ? {...i,...patch} : i));
@@ -1151,12 +1281,14 @@ export default function InfraBrainApp() {
     return taskId;
   }
   function accept(incident) {
+    if(backendConnected){ sendWS({type:"accept",incidentId:incident.id}); return; }
     const sug=incident?.suggestion; if(!sug) return;
     const taskId=queueRepair(incident.node,sug.action,4000);
     addLog("op",`SRE ACCEPTED ${sug.action}. Repair task ${taskId} queued on ${incident.node} — 4 ticks.`,incident.node);
     updateIncident(incident.node,{stage:"repairing"});
   }
   function override(incident, action) {
+    if(backendConnected){ sendWS({type:"override",incidentId:incident.id,action}); return; }
     const sug=incident?.suggestion; if(!sug) return;
     addLog("op",`SRE OVERRIDE: rejected ${sug.action}, applying ${action}. Correction → KG.`,incident.node);
     recordOverrideState(sug.action,action,incident.node,stRef.current.tick);
@@ -1165,69 +1297,155 @@ export default function InfraBrainApp() {
   }
   function escalate(incident) {
     const node=incident?.node||stRef.current.focusNode;
+    if(backendConnected){ sendWS({type:"escalate",node}); return; }
     addLog("op",`SRE ESCALATED ${node} → on-call (L2). Page sent to primary + secondary.`,node);
     addChat("sys",`⚑ Escalated ${node} to on-call (L2). PagerDuty incident opened; secondary notified.`);
   }
   function cancelRepair(taskId){
+    if(backendConnected){ sendWS({type:"cancel_repair",taskId}); return; }
     setRepairs(r=>r.filter(x=>x.taskId!==taskId));
     addLog("op",`SRE cancelled repair task ${taskId}.`);
   }
   function resetEpisode(gen) {
+    if(backendConnected){
+      sendWS({type:"reset",gen});
+      sendWS({type:"set_running",running:true});
+      setAgentGen(gen); setFocusNode(FAULT_NODE);
+      setChat([{role:"sys",text:`Episode reset to gen-${gen}. Backend running real LLM diagnosis.`}]);
+      return;
+    }
     setNodes(freshNodes()); setTick(0); setIncidents([]); setRepairs([]);
     histRef.current={}; setAgentGen(gen); setRunning(true); setFocusNode(FAULT_NODE);
     setLog([{t:0,kind:"sys",text:`Episode reset — fault-injection scenario, seed 42, gen-${gen}. ${gen>=4?"KG similarity retrieval + evolved prompt active.":"Baseline agent."}`}]);
     setChat([{role:"sys",text:`Episode reset to gen-${gen}. Ask a question or type "/" for actions.`}]);
   }
 
-  /* SRE chat handler — routes slash commands to actions, else asks the agent */
-  function handleChat(text){
+  /* SRE chat handler — real LLM streaming if backend connected, scripted otherwise */
+  async function handleChat(text){
     addChat("sre",text);
     const S=stRef.current;
     const node=S.focusNode;
     const incident=S.incidents.find(i=>i.node===node && i.stage!=="resolved");
+
+    // ── Slash commands ────────────────────────────────────────────────────
     if(text.startsWith("/")){
       const [cmd] = text.split(" ");
       const spec = SLASH_COMMANDS.find(c=>c.cmd===cmd);
       if(!spec){ addChat("agent",`Unknown command ${cmd}. Type "/" to see available actions.`); return; }
+
+      // Action commands → WS (backend) or local queue
       if(spec.kind==="action"){
-        const tid=queueRepair(node,spec.action,6000);
-        addLog("op",`SRE via console: queued ${spec.action} on ${node} (${tid}).`,node);
-        if(incident) updateIncident(node,{stage:"repairing",
-          suggestion:incident.suggestion?{...incident.suggestion,chosenAction:spec.action}:undefined});
-        addChat("agent",`Queued ${spec.action} on ${node} — repair task ${tid}, 4 ticks. Watching post-fix window.`);
+        if(backendConnected){
+          sendWS({type:"queue_repair",node,action:spec.action,prefix:6000});
+        } else {
+          const tid=queueRepair(node,spec.action,6000);
+          addLog("op",`SRE via console: queued ${spec.action} on ${node} (${tid}).`,node);
+          if(incident) updateIncident(node,{stage:"repairing",
+            suggestion:incident.suggestion?{...incident.suggestion,chosenAction:spec.action}:undefined});
+        }
+        addChat("agent",`Queued ${spec.action} on ${node} — 4 ticks. Watching post-fix window.`);
         return;
       }
       if(spec.kind==="borg"){
-        const tid=queueRepair(node,"restart_node",8000);
-        addLog("op",`SRE via console: launched raw Borg job on ${node} (${tid}).`,node);
-        addChat("agent",`Borg job ${tid} launched on ${node} (restart_node). Use /ramp_fans, /migrate, etc. for a specific action.`);
+        if(backendConnected){
+          sendWS({type:"queue_repair",node,action:"restart_node",prefix:8000});
+        } else {
+          const tid=queueRepair(node,"restart_node",8000);
+          addLog("op",`SRE via console: launched raw Borg job on ${node} (${tid}).`,node);
+        }
+        addChat("agent",`Borg job launched on ${node} (restart_node).`);
         return;
       }
       if(spec.kind==="escalate"){ escalate(incident||{node}); return; }
       if(cmd==="/diagnose"){
-        if(!incident){ addChat("agent",`No active incident on ${node}. Telemetry nominal — nothing to diagnose.`); return; }
-        const sug=buildSuggestion(S.nodes,S.agentGen,incident.faultType,node);
-        updateIncident(node,{stage:"suggested",suggestion:sug});
-        addChat("agent",`Re-diagnosed ${node}: ${sug.diagnosis} → ${sug.action} (conf ${sug.conf}).`);
-        return;
+        if(!incident){ addChat("agent",`No active incident on ${node}. Telemetry nominal.`); return; }
+        if(!backendConnected){
+          const sug=buildSuggestion(S.nodes,S.agentGen,incident.faultType,node);
+          updateIncident(node,{stage:"suggested",suggestion:sug});
+          addChat("agent",`Re-diagnosed ${node}: ${sug.diagnosis} → ${sug.action} (conf ${sug.conf}).`);
+          return;
+        }
+        // Fall through to LLM stream with /diagnose as the question
       }
-      // query-type: /explain /history /status
-      addChat("agent",askAgent({text:cmd.slice(1),incident,node,
+    }
+
+    // ── LLM stream (backend) or scripted fallback ─────────────────────────
+    if(backendConnected && BACKEND_HTTP){
+      const apiUrl = `${BACKEND_HTTP}/api/chat`;
+      const nodeState = S.nodes.find(n=>n.id===node)||{};
+      // Add streaming placeholder
+      addChat("agent","▌");
+      let agentText="";
+      try {
+        const resp = await fetch(apiUrl,{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({text,focusNode:node,incident,node:nodeState,gen:S.agentGen}),
+        });
+        const reader=resp.body.getReader();
+        const decoder=new TextDecoder();
+        while(true){
+          const {done,value}=await reader.read();
+          if(done) break;
+          const lines=decoder.decode(value).split("\n");
+          for(const line of lines){
+            if(!line.startsWith("data: ")) continue;
+            const raw=line.slice(6).trim();
+            if(raw==="[DONE]") break;
+            try{
+              agentText += JSON.parse(raw).text||"";
+              setChat(c=>{
+                const u=[...c]; u[u.length-1]={role:"agent",text:agentText};
+                return u;
+              });
+            } catch{}
+          }
+        }
+        // Finalise (remove blinking cursor artefact)
+        setChat(c=>{ const u=[...c]; u[u.length-1]={role:"agent",text:agentText||"…"}; return u; });
+      } catch(err){
+        setChat(c=>{ const u=[...c]; u[u.length-1]={role:"agent",text:`[Stream error: ${err.message}]`}; return u; });
+      }
+      return;
+    }
+
+    // ── Scripted fallback (demo mode, no backend) ─────────────────────────
+    if(text.startsWith("/")){
+      addChat("agent",askAgent({text:text.slice(1),incident,node,
         nodeState:S.nodes.find(n=>n.id===node),agentGen:S.agentGen,corrections:S.kgCorr}));
       return;
     }
-    // free-text question → agent
     addChat("agent",askAgent({text,incident,node,
       nodeState:S.nodes.find(n=>n.id===node),agentGen:S.agentGen,corrections:S.kgCorr}));
+  }
+
+  const statusColor = {connected:T.ok, error:T.crit, reconnecting:T.warn, connecting:T.warn, demo:T.faint};
+  const statusLabel = {connected:"backend ●", error:"backend ✕", reconnecting:"reconnecting…", connecting:"connecting…", demo:"demo mode"};
+
+  function handleRun(){
+    if(backendConnected){
+      sendWS({type:"set_running",running:!running});
+    } else {
+      setRunning(r=>!r);
+    }
   }
 
   return (
     <div style={{background:T.bg,color:T.text,minHeight:"100vh",
       fontFamily:"system-ui,-apple-system,sans-serif",padding:14}}>
-      <StatusBar tick={tick} running={running} agentGen={agentGen} episodes={episodes}
-        corrections={kgCorr.length} onRun={()=>setRunning(r=>!r)}
-        onGen0={()=>{resetEpisode(0);setTab("Observability");}}
-        onGen4={()=>{resetEpisode(4);setTab("Observability");}}/>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2}}>
+        <div style={{flex:1}}>
+          <StatusBar tick={tick} running={running} agentGen={agentGen} episodes={episodes}
+            corrections={kgCorr.length} onRun={handleRun}
+            onGen0={()=>{resetEpisode(0);setTab("Observability");}}
+            onGen4={()=>{resetEpisode(4);setTab("Observability");}}/>
+        </div>
+        <div style={{fontFamily:MONO,fontSize:10,color:statusColor[backendStatus]||T.muted,
+          border:`1px solid ${statusColor[backendStatus]||T.faint}`,borderRadius:6,
+          padding:"3px 8px",whiteSpace:"nowrap"}}>
+          {statusLabel[backendStatus]}
+        </div>
+      </div>
       <div style={{marginTop:12,marginBottom:12}}>
         <TabBar active={tab} onSelect={setTab}/>
       </div>
@@ -1239,7 +1457,7 @@ export default function InfraBrainApp() {
       {tab==="Knowledge Graph"&& <KnowledgeGraphTab corrections={kgCorr}/>}
       {tab==="Training Data"  && <TrainingDataTab pairs={pairs}/>}
       <div style={{marginTop:14,fontFamily:MONO,fontSize:10,color:T.faint}}>
-        INFRABRAIN · all data synthetic · suggest-only: nothing runs without SRE approval · self-modification sandboxed to simulator
+        INFRABRAIN · suggest-only: nothing runs without SRE approval · self-modification sandboxed to simulator
       </div>
     </div>
   );
