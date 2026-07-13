@@ -55,7 +55,45 @@ const KG_SEED_EDGES = [
   ["c1","a1"],["c2","a2"],["c3","a3"],["c4","a4"],
 ];
 const ACTIONS = ["ramp_fans","throttle_job","migrate_workload","drain_node","restart_node","escalate","no_action"];
-const FAULT_NODE = "R2-N5";
+
+/* Multiple fault sources → multiple concurrent incidents */
+const FAULTS = [
+  {node:"R2-N5", type:"fan", start:10},
+  {node:"R3-N2", type:"mem", start:22},
+];
+const FAULT_NODE = "R2-N5"; // hero scenario
+
+/* Blast radius: co-scheduled workloads per node (static demo data) */
+function blastRadius(nodeId){
+  const [r,n] = nodeId.replace("R","").split("-N");
+  const base = 1000 + (+r)*8 + (+n);
+  return {
+    primary:`job-${base}(trace)`,
+    shards:[`shard-${base}-a`,`shard-${base}-b`,`shard-${base}-c`],
+    replica:`R${(+r%4)+1}-N1 (checkpoint replica)`,
+    tenant: (+r%2? "team-vision" : "team-nlp"),
+  };
+}
+const RUNBOOKS = {
+  fan:["Confirm fan RPM decline on telemetry", "Ramp fans → 90% (ramp_fans)",
+       "Verify temp slope reverses within 4 ticks", "No recovery → drain_node + RMA fan"],
+  mem:["Capture heap snapshot on node", "Migrate workload to healthy peer (migrate_workload)",
+       "Restart affected process (restart_node)", "Confirm mem plateaus post-restart"],
+  default:["Inspect telemetry window", "Query KG for matching signature", "Escalate if signature is novel"],
+};
+const SLASH_COMMANDS = [
+  {cmd:"/diagnose",  desc:"re-run diagnosis on focused node", kind:"query"},
+  {cmd:"/explain",   desc:"explain the agent's current reasoning", kind:"query"},
+  {cmd:"/history",   desc:"show KG corrections for this signature", kind:"query"},
+  {cmd:"/status",    desc:"fleet health summary", kind:"query"},
+  {cmd:"/ramp_fans", desc:"queue ramp_fans repair on focused node", kind:"action", action:"ramp_fans"},
+  {cmd:"/throttle",  desc:"queue throttle_job repair", kind:"action", action:"throttle_job"},
+  {cmd:"/migrate",   desc:"queue migrate_workload repair", kind:"action", action:"migrate_workload"},
+  {cmd:"/drain",     desc:"drain the focused node", kind:"action", action:"drain_node"},
+  {cmd:"/restart",   desc:"restart the focused node", kind:"action", action:"restart_node"},
+  {cmd:"/borg",      desc:"launch a raw Borg repair job", kind:"borg"},
+  {cmd:"/escalate",  desc:"escalate focused incident to on-call", kind:"escalate"},
+];
 
 /* ── SIMULATOR ───────────────────────────────────────────────────────── */
 function freshNodes() {
@@ -63,29 +101,39 @@ function freshNodes() {
   for (let r=1; r<=4; r++)
     for (let n=1; n<=8; n++)
       out.push({id:`R${r}-N${n}`, temp:56+Math.random()*10, util:52+Math.random()*28,
-        fan:55+Math.random()*12, job:`job-${1000+r*8+n}(trace)`, status:"ok"});
+        fan:55+Math.random()*12, mem:34+Math.random()*16,
+        job:`job-${1000+r*8+n}(trace)`, status:"ok"});
   return out;
 }
 const statusOf = t => t>=88?"crit":t>=75?"warn":"ok";
 const clamp = (v,lo,hi) => Math.max(lo,Math.min(hi,v));
+const faultAt = id => FAULTS.find(f=>f.node===id);
 
-function stepNodes(nodes, t, repair) {
+function stepNodes(nodes, t, repairs) {
   return nodes.map(nd => {
-    let {temp,util,fan} = nd;
-    const isFault = nd.id===FAULT_NODE;
-    const repairActive = repair?.node===nd.id && repair?.effectApplied;
+    let {temp,util,fan,mem} = nd;
+    const f = faultAt(nd.id);
+    const rep = repairs.find(r=>r.node===nd.id && r.effectApplied);
     util = clamp(util+(Math.random()-.49)*4, 20, 98);
-    if (isFault && t>=10 && !repairActive) fan = Math.max(14, fan-3.0);
-    if (repairActive) {
-      if (repair.action==="ramp_fans")       fan  = Math.min(96, fan+9);
-      if (repair.action==="throttle_job")    util = Math.max(25, util-12);
-      if (repair.action==="migrate_workload") util = Math.max(20, util-18);
-      if (repair.action==="drain_node")      util = Math.max(5,  util-22);
+    mem  = clamp(mem+(Math.random()-.5)*1.5, 20, 99);
+    // fault dynamics
+    if (f && t>=f.start && !rep) {
+      if (f.type==="fan") fan = Math.max(14, fan-3.0);
+      if (f.type==="mem") mem = Math.min(99, mem+2.4);
     }
-    if (temp>=88) util *= 0.93; // thermal throttling — deceptive symptom
-    const dT = 0.085*util - 0.082*fan - 0.45 + (Math.random()-.5)*0.7;
+    // repair effects
+    if (rep) {
+      if (rep.action==="ramp_fans")        fan  = Math.min(96, fan+9);
+      if (rep.action==="throttle_job")     util = Math.max(25, util-12);
+      if (rep.action==="migrate_workload"){util = Math.max(20, util-18); mem = Math.max(25, mem-14);}
+      if (rep.action==="drain_node")       util = Math.max(5,  util-22);
+      if (rep.action==="restart_node")     mem  = Math.max(24, mem-16);
+    }
+    if (temp>=88) util *= 0.93;                 // thermal throttling — deceptive symptom
+    const memHeat = mem>82 ? (mem-82)*0.12 : 0; // mem pressure adds heat
+    const dT = 0.085*util - 0.082*fan - 0.45 + memHeat + (Math.random()-.5)*0.7;
     temp = clamp(temp+dT, 45, 104);
-    return {...nd, temp, util, fan, status:statusOf(temp)};
+    return {...nd, temp, util, fan, mem, status:statusOf(temp)};
   });
 }
 
@@ -96,10 +144,13 @@ function Chip({label, value, color=T.text}) {
     <span style={{color:T.faint}}>{label} </span><span style={{color}}>{value}</span>
   </div>;
 }
-function Panel({title, sub, children, dashed, style}) {
+function Panel({title, sub, children, dashed, style, right}) {
   return <div style={{background:T.panel,border:`1px solid ${dashed?T.faint:T.line}`,
     borderStyle:dashed?"dashed":"solid",borderRadius:10,padding:12,...style}}>
-    {title && <div style={{fontSize:12.5,fontWeight:600,marginBottom:2}}>{title}</div>}
+    {(title||right) && <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:sub?2:0}}>
+      {title && <div style={{fontSize:12.5,fontWeight:600}}>{title}</div>}
+      <div style={{flex:1}}/>{right}
+    </div>}
     {sub   && <div style={{fontFamily:MONO,fontSize:10,color:T.muted,marginBottom:8}}>{sub}</div>}
     {children}
   </div>;
@@ -157,16 +208,72 @@ function TabBar({active, onSelect}) {
   </div>;
 }
 
+/* ── FLEET HEALTH STRIP ──────────────────────────────────────────────── */
+function HealthStat({label, value, color=T.text}) {
+  return <div style={{display:"flex",flexDirection:"column",gap:1,minWidth:78}}>
+    <span style={{fontFamily:MONO,fontSize:20,fontWeight:700,color}}>{value}</span>
+    <span style={{fontFamily:MONO,fontSize:9.5,color:T.faint,letterSpacing:1}}>{label}</span>
+  </div>;
+}
+function FleetHealthStrip({nodes, incidents, repairs, agentGen}) {
+  const ok  = nodes.filter(n=>n.status==="ok").length;
+  const wn  = nodes.filter(n=>n.status==="warn").length;
+  const cr  = nodes.filter(n=>n.status==="crit").length;
+  const active = incidents.filter(i=>i.stage!=="resolved").length;
+  const inFlight = repairs.length;
+  const hottest = nodes.reduce((a,b)=>b.temp>a.temp?b:a, nodes[0]);
+  const mttr = agentGen>=4 ? "3.1" : "6.8";
+  return <Panel style={{padding:"10px 14px"}}>
+    <div style={{display:"flex",alignItems:"center",gap:22,flexWrap:"wrap"}}>
+      <HealthStat label="HEALTHY" value={ok} color={T.ok}/>
+      <HealthStat label="DEPLETING" value={wn} color={T.warn}/>
+      <HealthStat label="CRITICAL" value={cr} color={T.crit}/>
+      <div style={{width:1,height:34,background:T.line}}/>
+      <HealthStat label="ACTIVE INCIDENTS" value={active} color={active?T.crit:T.muted}/>
+      <HealthStat label="RT JOBS IN FLIGHT" value={inFlight} color={inFlight?T.agent:T.muted}/>
+      <HealthStat label="MTTR (ticks)" value={mttr} color={T.text}/>
+      <div style={{flex:1}}/>
+      <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,textAlign:"right"}}>
+        <div>hottest node</div>
+        <div style={{color:hottest?.temp>=88?T.crit:hottest?.temp>=75?T.warn:T.ok}}>
+          {hottest?.id} · {hottest?.temp.toFixed(1)}°C</div>
+      </div>
+    </div>
+  </Panel>;
+}
+
+/* ── FOCUS SWITCHER (shared across incidents/telemetry/events) ───────── */
+function FocusSwitcher({incidents, focusNode, onFocus}) {
+  const active = incidents.filter(i=>i.stage!=="resolved");
+  const stageColor = {analyzing:T.warn, suggested:T.agent, repairing:T.agent, monitoring:T.warn, resolved:T.ok};
+  return <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+    <span style={{fontFamily:MONO,fontSize:10,color:T.faint,letterSpacing:1}}>FOCUS</span>
+    {active.length===0 &&
+      <span style={{fontFamily:MONO,fontSize:11,color:T.faint}}>no active incidents — click a node to inspect</span>}
+    {active.map(inc => {
+      const isSel = inc.node===focusNode;
+      return <button key={inc.id} onClick={()=>onFocus(inc.node)} style={{
+        background:isSel?T.soft:"transparent", border:`1px solid ${isSel?stageColor[inc.stage]:T.line}`,
+        borderRadius:16, padding:"4px 11px", fontFamily:MONO, fontSize:11, cursor:"pointer",
+        color:isSel?T.text:T.muted, display:"flex", alignItems:"center", gap:6}}>
+        <Dot color={stageColor[inc.stage]}/>{inc.node}
+        <span style={{color:T.faint}}>· {inc.stage}</span>
+      </button>;
+    })}
+  </div>;
+}
+
 /* ── RACK GRID ───────────────────────────────────────────────────────── */
-function RackGrid({nodes, selected, repair, onSelect}) {
+function RackGrid({nodes, selected, repairs, onSelect}) {
   const colOf = st => st==="crit"?T.crit:st==="warn"?T.warn:T.ok;
+  const repairSet = new Set(repairs.filter(r=>!r.effectApplied).map(r=>r.node));
   return <Panel title="Fleet — 4 racks × 8 nodes" sub="GPU training nodes · Alibaba trace-replay workload">
     {[1,2,3,4].map(r => <div key={r} style={{marginBottom:8}}>
       <div style={{fontFamily:MONO,fontSize:10,color:T.faint,marginBottom:3}}>RACK {r}</div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(8,1fr)",gap:4}}>
         {nodes.filter(n=>n.id.startsWith(`R${r}-`)).map(n => {
           const col=colOf(n.status), isSel=n.id===selected;
-          const repairing=repair?.node===n.id && !repair?.effectApplied;
+          const repairing=repairSet.has(n.id);
           return <button key={n.id} onClick={()=>onSelect(n.id)}
             title={`${n.id} · ${n.temp.toFixed(1)}°C`}
             style={{height:32,borderRadius:4,cursor:"pointer",position:"relative",
@@ -178,7 +285,7 @@ function RackGrid({nodes, selected, repair, onSelect}) {
         })}
       </div>
     </div>)}
-    <div style={{fontFamily:MONO,fontSize:10,color:T.muted,marginTop:4,display:"flex",gap:12}}>
+    <div style={{fontFamily:MONO,fontSize:10,color:T.muted,marginTop:4,display:"flex",gap:12,flexWrap:"wrap"}}>
       <span><Dot color={T.ok}/>healthy</span>
       <span><Dot color={T.warn}/>depleting</span>
       <span><Dot color={T.crit}/>critical</span>
@@ -187,11 +294,36 @@ function RackGrid({nodes, selected, repair, onSelect}) {
   </Panel>;
 }
 
+/* ── REPAIR TASK QUEUE ───────────────────────────────────────────────── */
+function RepairQueue({repairs, onCancel}) {
+  return <Panel title="Repair task queue" sub="Borg-style RT jobs · suggest-only: queued by SRE, never autonomous">
+    {repairs.length===0 && <div style={{fontFamily:MONO,fontSize:11,color:T.faint}}>
+      No repair tasks in flight. Accept an incident or use /borg to queue one.
+    </div>}
+    <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:150,overflowY:"auto"}}>
+      {repairs.map(r => {
+        const done=r.effectApplied;
+        return <div key={r.taskId} style={{display:"flex",alignItems:"center",gap:8,
+          border:`1px solid ${T.line}`,borderRadius:6,padding:"5px 8px",fontFamily:MONO,fontSize:10.5}}>
+          <span style={{color:T.agent}}>{r.taskId}</span>
+          <span style={{color:T.faint}}>{r.node}</span>
+          <span style={{color:T.text}}>{r.action}</span>
+          <div style={{flex:1}}/>
+          {done
+            ? <span style={{color:T.ok}}>✓ applied · monitoring</span>
+            : <span style={{color:T.warn}}>▶ {r.ticksLeft} ticks</span>}
+          {!done && <Btn color={T.faint} onClick={()=>onCancel(r.taskId)} style={{padding:"1px 6px"}}>✕</Btn>}
+        </div>;
+      })}
+    </div>
+  </Panel>;
+}
+
 /* ── TELEMETRY ───────────────────────────────────────────────────────── */
 function Strip({data, dataKey, color, label, domain, refs=[]}) {
   return <div style={{marginBottom:4}}>
     <div style={{fontFamily:MONO,fontSize:9.5,color:T.faint,marginBottom:1}}>{label}</div>
-    <ResponsiveContainer width="100%" height={82}>
+    <ResponsiveContainer width="100%" height={66}>
       <LineChart data={data} margin={{top:4,right:6,bottom:0,left:-26}}>
         <XAxis dataKey="t" hide/>
         <YAxis domain={domain} tick={{fill:T.faint,fontSize:9}} stroke={T.line}/>
@@ -206,15 +338,37 @@ function Telemetry({history, nodes, selected}) {
   const nd=nodes.find(n=>n.id===selected);
   const data=history[selected]||[];
   return <Panel title={`Telemetry — ${selected}`}
-    sub={nd?`${nd.temp.toFixed(1)}°C · util ${nd.util.toFixed(0)}% · fan ${nd.fan.toFixed(0)}% · ${nd.job}`:"select a node"}>
+    sub={nd?`${nd.temp.toFixed(1)}°C · util ${nd.util.toFixed(0)}% · fan ${nd.fan.toFixed(0)}% · mem ${nd.mem.toFixed(0)}% · ${nd.job}`:"select a node"}>
     <Strip data={data} dataKey="temp" color={T.crit} label="temperature °C — warn 75° · crit 88°" domain={[45,105]} refs={[75,88]}/>
     <Strip data={data} dataKey="util" color={T.ok}   label="GPU utilization %" domain={[0,100]}/>
     <Strip data={data} dataKey="fan"  color={T.agent} label="fan speed %" domain={[0,100]}/>
+    <Strip data={data} dataKey="mem"  color={T.kg}   label="memory % — warn 82%" domain={[0,100]} refs={[82]}/>
   </Panel>;
 }
 
+/* ── INCIDENT TIMELINE STEPPER ───────────────────────────────────────── */
+const STAGES = ["analyzing","suggested","repairing","monitoring","resolved"];
+const STAGE_SHORT = {analyzing:"detect",suggested:"suggest",repairing:"repair",monitoring:"monitor",resolved:"resolved"};
+function IncidentTimeline({stage}) {
+  const cur = STAGES.indexOf(stage);
+  return <div style={{display:"flex",alignItems:"center",gap:0}}>
+    {STAGES.map((s,i)=>{
+      const done=i<cur, active=i===cur;
+      const col = done?T.ok:active?T.agent:T.faint;
+      return <div key={s} style={{display:"flex",alignItems:"center",flex:i<STAGES.length-1?1:0}}>
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+          <div style={{width:11,height:11,borderRadius:6,background:active?col:"transparent",
+            border:`2px solid ${col}`}}/>
+          <span style={{fontFamily:MONO,fontSize:8.5,color:col}}>{STAGE_SHORT[s]}</span>
+        </div>
+        {i<STAGES.length-1 && <div style={{flex:1,height:2,background:done?T.ok:T.line,margin:"0 3px 12px"}}/>}
+      </div>;
+    })}
+  </div>;
+}
+
 /* ── INCIDENT PANEL ──────────────────────────────────────────────────── */
-function IncidentPanel({incident, agentGen, onAccept, onOverride}) {
+function IncidentPanel({incident, agentGen, onAccept, onOverride, onEscalate}) {
   const [picking,setPicking] = useState(false);
   const s=incident?.suggestion, stage=incident?.stage;
   const stageLabel = {
@@ -222,12 +376,14 @@ function IncidentPanel({incident, agentGen, onAccept, onOverride}) {
     repairing:"Repair task executing", monitoring:"Post-fix monitoring — time-to-recurrence",
     resolved:"Resolved",
   };
-  return <Panel title="Incident" sub={stage?stageLabel[stage]:"Watcher quiet — no anomaly"}>
+  return <Panel title={incident?`Incident — ${incident.node}`:"Incident"}
+    sub={stage?stageLabel[stage]:"Watcher quiet — no anomaly on focused node"}
+    right={incident && <Btn color={T.crit} onClick={()=>onEscalate(incident)} style={{padding:"3px 9px"}}>⚑ Escalate</Btn>}>
     {!incident && <div style={{fontSize:11.5,color:T.faint,fontFamily:MONO}}>
-      Fault fires at t010 on R2-N5.<br/>
-      Fan degradation → thermal cascade.<br/>
-      Gen-0 misdiagnoses as CPU overload.<br/>Gen-4 gets it right via KG correction.
+      Faults fire at t010 (R2-N5 fan) and t022 (R3-N2 mem).<br/>
+      Gen-0 misdiagnoses fan as CPU overload.<br/>Gen-4 gets it right via KG correction.
     </div>}
+    {incident && <div style={{marginBottom:10}}><IncidentTimeline stage={stage}/></div>}
     {stage==="analyzing" && <div style={{fontFamily:MONO,fontSize:11.5,color:T.warn}}>
       Anomaly flagged — querying telemetry + KG…
     </div>}
@@ -247,8 +403,8 @@ function IncidentPanel({incident, agentGen, onAccept, onOverride}) {
           paddingLeft:7,marginBottom:4,fontSize:11,
           color:e.startsWith("KG")?T.kg:T.muted,fontFamily:MONO}}>{e}</div>)}
       </div>
-      {stage==="suggested" && !picking && <div style={{display:"flex",gap:8}}>
-        <Btn color={T.ok} onClick={onAccept}>Accept & queue repair</Btn>
+      {stage==="suggested" && !picking && <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        <Btn color={T.ok} onClick={()=>onAccept(incident)}>Accept & queue repair</Btn>
         <Btn color={T.kg} onClick={()=>setPicking(true)}>Override…</Btn>
       </div>}
       {stage==="suggested" && picking && <div>
@@ -257,7 +413,7 @@ function IncidentPanel({incident, agentGen, onAccept, onOverride}) {
         </div>
         <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
           {ACTIONS.filter(a=>a!==s.action).map(a =>
-            <Btn key={a} color={T.kg} onClick={()=>{setPicking(false);onOverride(a);}}>{a}</Btn>)}
+            <Btn key={a} color={T.kg} onClick={()=>{setPicking(false);onOverride(incident,a);}}>{a}</Btn>)}
           <Btn color={T.faint} onClick={()=>setPicking(false)}>cancel</Btn>
         </div>
       </div>}
@@ -270,13 +426,37 @@ function IncidentPanel({incident, agentGen, onAccept, onOverride}) {
   </Panel>;
 }
 
+/* ── BLAST RADIUS + RUNBOOK ──────────────────────────────────────────── */
+function BlastRunbook({incident}) {
+  if(!incident) return <Panel title="Blast radius & runbook" sub="focus an incident to see impact + playbook">
+    <div style={{fontFamily:MONO,fontSize:11,color:T.faint}}>No incident focused.</div>
+  </Panel>;
+  const b = blastRadius(incident.node);
+  const rb = RUNBOOKS[incident.faultType] || RUNBOOKS.default;
+  return <Panel title="Blast radius & runbook" sub={`impact of ${incident.node} · tenant ${b.tenant}`}>
+    <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.8,marginBottom:8}}>
+      <div><span style={{color:T.faint}}>primary job </span><span style={{color:T.crit}}>{b.primary}</span></div>
+      <div><span style={{color:T.faint}}>co-scheduled </span><span style={{color:T.warn}}>{b.shards.join(" · ")}</span></div>
+      <div><span style={{color:T.faint}}>replica </span><span style={{color:T.ok}}>{b.replica}</span></div>
+    </div>
+    <div style={{fontFamily:MONO,fontSize:9.5,letterSpacing:1,color:T.faint,marginBottom:4}}>
+      RUNBOOK — {incident.faultType} fault
+    </div>
+    <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.7}}>
+      {rb.map((step,i)=><div key={i} style={{color:T.muted}}>
+        <span style={{color:T.agent}}>{i+1}.</span> {step}</div>)}
+    </div>
+  </Panel>;
+}
+
 /* ── EVENT LOG ───────────────────────────────────────────────────────── */
-function EventLog({log}) {
+function EventLog({log, focusNode}) {
   const col = {sys:T.muted, watch:T.warn, agent:T.agent, op:T.kg};
   const lbl = {sys:"SYS  ", watch:"WATCH", agent:"AGENT", op:"SRE  "};
-  return <Panel title="Event log" sub="watcher · task agent · SRE operator — color-coded by source" style={{flex:1}}>
-    <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.7,maxHeight:180,overflowY:"auto"}}>
-      {log.map((e,i) => <div key={i} style={{color:col[e.kind]||T.muted,display:"flex",gap:6}}>
+  const shown = focusNode ? log.filter(e=>!e.node || e.node===focusNode) : log;
+  return <Panel title="Event log" sub={focusNode?`filtered → ${focusNode} · watcher · agent · SRE`:"watcher · task agent · SRE operator"} style={{flex:1}}>
+    <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.7,maxHeight:150,overflowY:"auto"}}>
+      {shown.map((e,i) => <div key={i} style={{color:col[e.kind]||T.muted,display:"flex",gap:6}}>
         <span style={{color:T.faint,minWidth:30}}>t{String(e.t).padStart(3,"0")}</span>
         <span style={{color:T.faint,minWidth:44}}>[{lbl[e.kind]||"SYS  "}]</span>
         <span>{e.text}</span>
@@ -285,14 +465,84 @@ function EventLog({log}) {
   </Panel>;
 }
 
+/* ── SRE CHAT + SLASH COMMAND PALETTE ────────────────────────────────── */
+function SREChat({messages, onSend, focusNode}) {
+  const [val,setVal] = useState("");
+  const [sel,setSel] = useState(0);
+  const scrollRef = useRef(null);
+  const showPalette = val.startsWith("/");
+  const filtered = SLASH_COMMANDS.filter(c=>c.cmd.startsWith(val.split(" ")[0]));
+  useEffect(()=>{ if(scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; },[messages]);
+  useEffect(()=>{ setSel(0); },[val]);
+
+  function submit(cmdText){
+    const text = (cmdText ?? val).trim();
+    if(!text) return;
+    onSend(text);
+    setVal("");
+  }
+  function onKey(e){
+    if(showPalette && filtered.length){
+      if(e.key==="ArrowDown"){e.preventDefault();setSel(s=>(s+1)%filtered.length);return;}
+      if(e.key==="ArrowUp"){e.preventDefault();setSel(s=>(s-1+filtered.length)%filtered.length);return;}
+      if(e.key==="Tab"){e.preventDefault();setVal(filtered[sel].cmd+" ");return;}
+    }
+    if(e.key==="Enter"){e.preventDefault();submit();}
+  }
+  const roleColor = {sre:T.kg, agent:T.agent, sys:T.muted};
+  const roleLabel = {sre:"SRE",agent:"AGENT",sys:"SYS"};
+  return <Panel title="SRE console" sub={`ask the agent · type "/" for actions · focus ${focusNode||"—"}`} style={{flex:1,display:"flex",flexDirection:"column"}}>
+    <div ref={scrollRef} style={{flex:1,minHeight:120,maxHeight:230,overflowY:"auto",
+      fontFamily:MONO,fontSize:11,lineHeight:1.6,marginBottom:8}}>
+      {messages.map((m,i)=><div key={i} style={{marginBottom:6}}>
+        <span style={{color:roleColor[m.role]||T.muted,fontSize:9.5}}>{roleLabel[m.role]||"SYS"} </span>
+        <span style={{color:m.role==="sre"?T.text:roleColor[m.role]||T.muted,whiteSpace:"pre-wrap"}}>{m.text}</span>
+      </div>)}
+    </div>
+    <div style={{position:"relative"}}>
+      {showPalette && filtered.length>0 && <div style={{position:"absolute",bottom:"100%",left:0,right:0,
+        background:T.soft,border:`1px solid ${T.line}`,borderRadius:8,marginBottom:4,maxHeight:180,
+        overflowY:"auto",boxShadow:"0 -4px 16px rgba(0,0,0,.4)"}}>
+        {filtered.map((c,i)=><div key={c.cmd} onMouseDown={e=>{e.preventDefault();setVal(c.cmd+" ");}}
+          style={{display:"flex",gap:8,padding:"5px 9px",cursor:"pointer",
+            background:i===sel?T.panel:"transparent",fontFamily:MONO,fontSize:10.5}}>
+          <span style={{color:c.kind==="action"||c.kind==="borg"?T.agent:c.kind==="escalate"?T.crit:T.kg,minWidth:82}}>{c.cmd}</span>
+          <span style={{color:T.muted}}>{c.desc}</span>
+        </div>)}
+      </div>}
+      <div style={{display:"flex",gap:6}}>
+        <input value={val} onChange={e=>setVal(e.target.value)} onKeyDown={onKey}
+          placeholder='Ask the agent, or "/" for actions…'
+          style={{flex:1,background:T.bg,border:`1px solid ${T.line}`,borderRadius:6,
+            color:T.text,fontFamily:MONO,fontSize:11,padding:"7px 9px",outline:"none"}}/>
+        <Btn color={T.agent} onClick={()=>submit()}>send</Btn>
+      </div>
+    </div>
+  </Panel>;
+}
+
 /* ── OBSERVABILITY TAB ───────────────────────────────────────────────── */
-function ObservabilityTab({nodes,selected,onSelect,history,incident,agentGen,repair,onAccept,onOverride,log}) {
-  return <div style={{display:"grid",gridTemplateColumns:"300px 1fr 340px",gap:12}}>
-    <RackGrid nodes={nodes} selected={selected} repair={repair} onSelect={onSelect}/>
-    <Telemetry history={history} nodes={nodes} selected={selected}/>
-    <div style={{display:"flex",flexDirection:"column",gap:12}}>
-      <IncidentPanel incident={incident} agentGen={agentGen} onAccept={onAccept} onOverride={onOverride}/>
-      <EventLog log={log}/>
+function ObservabilityTab(p) {
+  const focusIncident = p.incidents.find(i=>i.node===p.focusNode && i.stage!=="resolved")
+                     || p.incidents.find(i=>i.node===p.focusNode);
+  return <div style={{display:"flex",flexDirection:"column",gap:12}}>
+    <FleetHealthStrip nodes={p.nodes} incidents={p.incidents} repairs={p.repairs} agentGen={p.agentGen}/>
+    <FocusSwitcher incidents={p.incidents} focusNode={p.focusNode} onFocus={p.onSelect}/>
+    <div style={{display:"grid",gridTemplateColumns:"300px 1fr 360px",gap:12,alignItems:"start"}}>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <RackGrid nodes={p.nodes} selected={p.focusNode} repairs={p.repairs} onSelect={p.onSelect}/>
+        <RepairQueue repairs={p.repairs} onCancel={p.onCancelRepair}/>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <Telemetry history={p.history} nodes={p.nodes} selected={p.focusNode}/>
+        <BlastRunbook incident={focusIncident}/>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <IncidentPanel incident={focusIncident} agentGen={p.agentGen}
+          onAccept={p.onAccept} onOverride={p.onOverride} onEscalate={p.onEscalate}/>
+        <EventLog log={p.log} focusNode={p.focusNode}/>
+        <SREChat messages={p.chat} onSend={p.onChat} focusNode={p.focusNode}/>
+      </div>
     </div>
   </div>;
 }
@@ -492,29 +742,75 @@ function TrainingDataTab({pairs}) {
   </div>;
 }
 
+/* ── AGENT RESPONSE (scripted now · swap in a real LLM later) ─────────── */
+/*
+ * To wire a real model later, replace the body of askAgent with an async
+ * fetch to your backend / Anthropic API and return the completion string.
+ * Keep the signature (ctx) so callers don't change.
+ */
+function askAgent(ctx) {
+  const { text, incident, node, nodeState, agentGen, corrections } = ctx;
+  const q = text.toLowerCase();
+  const sig = incident ? `temp↑/${incident.faultType==="fan"?"fan↓":"mem↑"} @ ${node}` : "no active signature";
+  if (q.includes("why") || q.includes("explain")) {
+    if (!incident) return `No active incident on ${node}. Telemetry nominal — nothing to explain right now.`;
+    return incident.suggestion
+      ? `My call on ${node}: ${incident.suggestion.diagnosis} → ${incident.suggestion.action} (conf ${incident.suggestion.conf}).\nKey signal: ${incident.suggestion.evidence[0]}\n${agentGen>=4?"KG similarity retrieval surfaced a matching correction, so I ranked it above the seed prior.":"Running gen-0 prior — fan signal is under-weighted vs util."}`
+      : `Still analyzing ${node} — I'll post a diagnosis in ~2 ticks.`;
+  }
+  if (q.includes("history") || q.includes("kg") || q.includes("correction")) {
+    return corrections.length
+      ? `KG holds ${corrections.length} correction(s). Most recent: rejected ${corrections[corrections.length-1].rejected} → applied ${corrections[corrections.length-1].applied}. Signature match: ${sig}.`
+      : `KG has no operator corrections yet for ${sig}. Override an incident to teach me.`;
+  }
+  if (q.includes("status") || q.includes("health") || q.includes("fleet")) {
+    return `Fleet: ${node} at ${nodeState?nodeState.temp.toFixed(1)+"°C":"n/a"}. ${incident?`Active incident stage: ${incident.stage}.`:"No incident on focused node."} Ask /diagnose to re-run, or "/" for actions.`;
+  }
+  if (q.includes("what") && q.includes("do")) {
+    return `You can Accept/Override the suggestion in the incident panel, or drive me from here — /ramp_fans, /throttle, /migrate, /drain, /restart, /borg, /escalate. Type "/" to see the palette.`;
+  }
+  return `Focused on ${node} (sig: ${sig}). I can /diagnose, /explain, show /history, or queue a repair. Type "/" for the action palette.`;
+}
+
 /* ── ROOT APP ────────────────────────────────────────────────────────── */
 export default function InfraBrainApp() {
   const [tab,setTab]         = useState("Observability");
   const [running,setRunning] = useState(false);
   const [tick,setTick]       = useState(0);
   const [nodes,setNodes]     = useState(freshNodes);
-  const [selected,setSelected] = useState(FAULT_NODE);
+  const [focusNode,setFocusNode] = useState(FAULT_NODE);
   const [agentGen,setAgentGen] = useState(0);
-  const [incident,setIncident] = useState(null);
-  const [repair,setRepair]     = useState(null);
+  const [incidents,setIncidents] = useState([]);
+  const [repairs,setRepairs]     = useState([]);
   const [episodes,setEpisodes] = useState(37);
   const [kgCorr,setKgCorr]     = useState([]);
   const [pairs,setPairs]       = useState([]);
-  const [log,setLog] = useState([{t:0,kind:"sys",text:"Simulator ready. Press RUN — fault fires at t010 on R2-N5."}]);
+  const [chat,setChat] = useState([{role:"sys",text:'SRE console ready. Ask a question, or type "/" for actions.'}]);
+  const [log,setLog] = useState([{t:0,kind:"sys",text:"Simulator ready. Press RUN — faults fire at t010 (R2-N5 fan) and t022 (R3-N2 mem)."}]);
   const histRef = useRef({});
   const stRef   = useRef({});
-  stRef.current = {nodes,incident,repair,agentGen,tick,kgCorr,pairs};
+  stRef.current = {nodes,incidents,repairs,agentGen,tick,kgCorr,pairs,focusNode};
 
-  const addLog = useCallback((kind,text) =>
-    setLog(l=>[{t:stRef.current.tick,kind,text},...l].slice(0,80)),[]);
+  const addLog = useCallback((kind,text,node) =>
+    setLog(l=>[{t:stRef.current.tick,kind,text,node},...l].slice(0,90)),[]);
+  const addChat = useCallback((role,text) =>
+    setChat(c=>[...c,{role,text}].slice(-60)),[]);
 
-  function buildSuggestion(n, gen) {
-    const nd=n.find(x=>x.id===FAULT_NODE)||{};
+  function buildSuggestion(n, gen, faultType, nodeId) {
+    const nd=n.find(x=>x.id===nodeId)||{};
+    if (faultType==="mem") {
+      return gen>=4
+        ? {diagnosis:"Memory leak — heap climbing to OOM", action:"migrate_workload", conf:0.88,
+            evidence:[
+              `mem ${nd.mem?.toFixed(0)}% — monotonic rise 10 ticks, no GC recovery`,
+              `temp rising with mem, util flat (not a compute burst)`,
+              "KG correction: mem↑ sig — throttle_job rejected, migrate applied"]}
+        : {diagnosis:"CPU overload on training job", action:"throttle_job", conf:0.70,
+            evidence:[
+              `util ${nd.util?.toFixed(0)}% with rising temp`,
+              `temp ${nd.temp?.toFixed(1)}°C — assuming compute-bound`,
+              "KG seed: temp spike → cpu overload (mem signal not weighted)"]};
+    }
     return gen>=4
       ? {diagnosis:"Fan degradation → thermal cascade", action:"ramp_fans", conf:0.91,
           evidence:[
@@ -528,100 +824,175 @@ export default function InfraBrainApp() {
             "KG seed: temp spike + util high → cpu overload (fan signal not weighted)"]};
   }
 
+  function recordOverrideState(rejected, applied, node, t){
+    setKgCorr(k=>[...k,{id:`corr-${k.length+1}`,label:`override #C${k.length+1}`,kind:"correction",
+      x:120+(k.length%4)*60,y:290,rejected,applied,ctx:`${node} gen-${stRef.current.agentGen}`}]);
+    setPairs(p=>[...p,{id:p.length+1,ctx:`sig: temp↑/fan↓ @ ${node} t${t}`,
+      rejected,chosen:applied,source:"operator_override"}]);
+  }
+
   useEffect(()=>{
     if (!running) return;
     const h = setInterval(()=>{
       const S = stRef.current;
       const t = S.tick+1;
       setTick(t);
-      const next = stepNodes(S.nodes, t, S.repair);
+      const next = stepNodes(S.nodes, t, S.repairs);
       setNodes(next);
       next.forEach(nd=>{
         const h2=(histRef.current[nd.id]||=[]);
-        h2.push({t, temp:+nd.temp.toFixed(1), util:+nd.util.toFixed(1), fan:+nd.fan.toFixed(1)});
+        h2.push({t, temp:+nd.temp.toFixed(1), util:+nd.util.toFixed(1), fan:+nd.fan.toFixed(1), mem:+nd.mem.toFixed(1)});
         if(h2.length>90) h2.shift();
       });
-      const fault=next.find(n=>n.id===FAULT_NODE);
-      let inc=S.incident, rep=S.repair;
+
+      let incs = S.incidents.map(i=>({...i}));
+      let reps = S.repairs.map(r=>({...r}));
+      const removeRep = new Set();
+      const addRep = [];
 
       // Repair countdown
-      if (rep && !rep.effectApplied) {
-        rep={...rep, ticksLeft:rep.ticksLeft-1};
-        if (rep.ticksLeft<=0) {
-          rep={...rep, effectApplied:true};
-          addLog("sys",`Repair task ${rep.taskId} complete on ${rep.node} — ${rep.action} applied. Monitoring post-fix window.`);
-          inc={...inc, stage:"monitoring", monitorFrom:t};
-        }
-        setRepair(rep);
-      }
-      // Watcher fires
-      if (!inc && fault.temp>=75 && t>=10) {
-        addLog("watch",`Watcher: ${FAULT_NODE} temp ${fault.temp.toFixed(1)}°C fan ${fault.fan.toFixed(0)}% util ${fault.util.toFixed(0)}% (z=3.4) — anomaly flagged.`);
-        inc={stage:"analyzing", since:t, faultNode:FAULT_NODE};
-        setSelected(FAULT_NODE);
-      }
-      // Agent suggestion (2 ticks after detection)
-      if (inc?.stage==="analyzing" && t>=inc.since+2) {
-        const sug=buildSuggestion(next, S.agentGen);
-        addLog("agent",`Task agent (gen-${S.agentGen}): ${sug.diagnosis} → ${sug.action} (conf ${sug.conf}). Awaiting SRE decision.`);
-        inc={...inc, stage:"suggested", suggestion:sug};
-      }
-      // Post-fix assessment
-      if (inc?.stage==="monitoring" && rep?.effectApplied) {
-        const elapsed=t-(inc.monitorFrom||0);
-        if (elapsed>=6) {
-          if (fault.temp<75) {
-            addLog("sys",`Resolved — ${FAULT_NODE} stable 6 ticks post-fix. Time-to-recurrence: none. Episode logged.`);
-            inc={stage:"resolved"};
-            setRepair(null);
-            setEpisodes(e=>e+1);
-          } else if (fault.temp>=92) {
-            const sug=inc.suggestion;
-            addLog("watch",`Post-fix: temp ${fault.temp.toFixed(1)}°C — fix ineffective. Scripted operator override firing.`);
-            addLog("op",`Override: rejected ${sug.action}, applying ramp_fans. Correction → KG. Pair exported.`);
-            const corrId=`corr-${S.kgCorr.length+1}`;
-            const cx=120+(S.kgCorr.length%4)*60, cy=290;
-            setKgCorr(k=>[...k,{id:corrId,label:`override #C${k.length+1}`,kind:"correction",
-              x:cx,y:cy,rejected:sug.action,applied:"ramp_fans",ctx:`R2-N5 gen-${S.agentGen}`}]);
-            setPairs(p=>[...p,{id:p.length+1,ctx:`sig: temp↑/fan↓ @ R2-N5 t${t}`,
-              rejected:sug.action,chosen:"ramp_fans",source:"operator_override"}]);
-            setRepair({taskId:`rt-${7000+t}`,node:FAULT_NODE,action:"ramp_fans",ticksLeft:4,effectApplied:false});
-            inc={...inc,stage:"repairing",suggestion:{...sug,overridden:true,chosenAction:"ramp_fans"}};
+      reps.forEach(rep=>{
+        if(!rep.effectApplied){
+          rep.ticksLeft--;
+          if(rep.ticksLeft<=0){
+            rep.effectApplied=true;
+            addLog("sys",`Repair task ${rep.taskId} complete on ${rep.node} — ${rep.action} applied. Monitoring post-fix window.`,rep.node);
+            const inc=incs.find(i=>i.node===rep.node && i.stage==="repairing");
+            if(inc){inc.stage="monitoring"; inc.monitorFrom=t;}
           }
         }
-      }
-      setIncident(inc);
+      });
+
+      // Watcher fires per fault source
+      FAULTS.forEach(f=>{
+        const nd=next.find(n=>n.id===f.node);
+        const existing=incs.find(i=>i.node===f.node && i.stage!=="resolved");
+        if(!existing && t>=f.start && nd.temp>=75){
+          addLog("watch",`Watcher: ${f.node} temp ${nd.temp.toFixed(1)}°C fan ${nd.fan.toFixed(0)}% mem ${nd.mem.toFixed(0)}% (z=3.4) — anomaly flagged.`,f.node);
+          incs.push({id:`inc-${f.node}-${t}`, node:f.node, faultType:f.type, stage:"analyzing", since:t});
+          setFocusNode(fn=>fn===FAULT_NODE||!fn ? f.node : fn);
+        }
+      });
+
+      // Agent suggestion (2 ticks after detection)
+      incs.forEach(inc=>{
+        if(inc.stage==="analyzing" && t>=inc.since+2){
+          const sug=buildSuggestion(next, S.agentGen, inc.faultType, inc.node);
+          addLog("agent",`Task agent (gen-${S.agentGen}): ${sug.diagnosis} → ${sug.action} (conf ${sug.conf}). Awaiting SRE decision.`,inc.node);
+          inc.stage="suggested"; inc.suggestion=sug;
+        }
+      });
+
+      // Post-fix assessment
+      incs.forEach(inc=>{
+        if(inc.stage==="monitoring"){
+          const rep=reps.find(r=>r.node===inc.node && r.effectApplied);
+          const nd=next.find(n=>n.id===inc.node);
+          if(rep){
+            const elapsed=t-(inc.monitorFrom||0);
+            if(elapsed>=6 && nd.temp<75){
+              addLog("sys",`Resolved — ${inc.node} stable 6 ticks post-fix. Time-to-recurrence: none. Episode logged.`,inc.node);
+              inc.stage="resolved";
+              removeRep.add(rep.taskId);
+              setEpisodes(e=>e+1);
+            } else if(nd.temp>=92 && inc.node===FAULT_NODE && !inc.autoOverridden){
+              const sug=inc.suggestion;
+              addLog("watch",`Post-fix: temp ${nd.temp.toFixed(1)}°C — fix ineffective. Scripted operator override firing.`,inc.node);
+              addLog("op",`Override: rejected ${sug.action}, applying ramp_fans. Correction → KG. Pair exported.`,inc.node);
+              recordOverrideState(sug.action,"ramp_fans",inc.node,t);
+              removeRep.add(rep.taskId);
+              addRep.push({taskId:`rt-${7000+t}`,node:inc.node,action:"ramp_fans",ticksLeft:4,effectApplied:false});
+              inc.stage="repairing"; inc.autoOverridden=true;
+              inc.suggestion={...sug,overridden:true,chosenAction:"ramp_fans"};
+            }
+          }
+        }
+      });
+
+      reps = reps.filter(r=>!removeRep.has(r.taskId)).concat(addRep);
+      setIncidents(incs);
+      setRepairs(reps);
     },650);
     return ()=>clearInterval(h);
   },[running,addLog]);
 
-  function recordOverride(sug, applied) {
-    const S=stRef.current;
-    const corrId=`corr-${S.kgCorr.length+1}`;
-    const cx=120+(S.kgCorr.length%4)*60, cy=290;
-    setKgCorr(k=>[...k,{id:corrId,label:`override #C${k.length+1}`,kind:"correction",
-      x:cx,y:cy,rejected:sug.action,applied,ctx:`R2-N5 gen-${S.agentGen}`}]);
-    setPairs(p=>[...p,{id:p.length+1,ctx:`sig: temp↑/fan↓ @ R2-N5 t${S.tick}`,
-      rejected:sug.action,chosen:applied,source:"operator_override"}]);
+  function updateIncident(node, patch){
+    setIncidents(list=>list.map(i=>i.node===node && i.stage!=="resolved" ? {...i,...patch} : i));
   }
-  function accept() {
+  function queueRepair(node, action, prefix=4000){
+    const taskId=`rt-${prefix+stRef.current.tick}`;
+    setRepairs(r=>[...r,{taskId,node,action,ticksLeft:4,effectApplied:false}]);
+    return taskId;
+  }
+  function accept(incident) {
     const sug=incident?.suggestion; if(!sug) return;
-    const taskId=`rt-${4000+tick}`;
-    addLog("op",`SRE ACCEPTED ${sug.action}. Repair task ${taskId} queued on R2-N5 — 4 ticks.`);
-    setRepair({taskId,node:FAULT_NODE,action:sug.action,ticksLeft:4,effectApplied:false});
-    setIncident({...incident,stage:"repairing"});
+    const taskId=queueRepair(incident.node,sug.action,4000);
+    addLog("op",`SRE ACCEPTED ${sug.action}. Repair task ${taskId} queued on ${incident.node} — 4 ticks.`,incident.node);
+    updateIncident(incident.node,{stage:"repairing"});
   }
-  function override(action) {
-    const sug=incident?.suggestion;
-    addLog("op",`SRE OVERRIDE: rejected ${sug.action}, applying ${action}. Correction → KG.`);
-    recordOverride(sug,action);
-    setRepair({taskId:`rt-${5000+tick}`,node:FAULT_NODE,action,ticksLeft:4,effectApplied:false});
-    setIncident({...incident,stage:"repairing",suggestion:{...sug,overridden:true,chosenAction:action}});
+  function override(incident, action) {
+    const sug=incident?.suggestion; if(!sug) return;
+    addLog("op",`SRE OVERRIDE: rejected ${sug.action}, applying ${action}. Correction → KG.`,incident.node);
+    recordOverrideState(sug.action,action,incident.node,stRef.current.tick);
+    queueRepair(incident.node,action,5000);
+    updateIncident(incident.node,{stage:"repairing",suggestion:{...sug,overridden:true,chosenAction:action}});
+  }
+  function escalate(incident) {
+    const node=incident?.node||stRef.current.focusNode;
+    addLog("op",`SRE ESCALATED ${node} → on-call (L2). Page sent to primary + secondary.`,node);
+    addChat("sys",`⚑ Escalated ${node} to on-call (L2). PagerDuty incident opened; secondary notified.`);
+  }
+  function cancelRepair(taskId){
+    setRepairs(r=>r.filter(x=>x.taskId!==taskId));
+    addLog("op",`SRE cancelled repair task ${taskId}.`);
   }
   function resetEpisode(gen) {
-    setNodes(freshNodes()); setTick(0); setIncident(null); setRepair(null);
-    histRef.current={}; setAgentGen(gen); setRunning(true);
-    setLog([{t:0,kind:"sys",text:`Episode reset — fan-degradation scenario, seed 42, gen-${gen}. ${gen>=4?"KG similarity retrieval + evolved prompt active.":"Baseline agent."}`}]);
+    setNodes(freshNodes()); setTick(0); setIncidents([]); setRepairs([]);
+    histRef.current={}; setAgentGen(gen); setRunning(true); setFocusNode(FAULT_NODE);
+    setLog([{t:0,kind:"sys",text:`Episode reset — fault-injection scenario, seed 42, gen-${gen}. ${gen>=4?"KG similarity retrieval + evolved prompt active.":"Baseline agent."}`}]);
+    setChat([{role:"sys",text:`Episode reset to gen-${gen}. Ask a question or type "/" for actions.`}]);
+  }
+
+  /* SRE chat handler — routes slash commands to actions, else asks the agent */
+  function handleChat(text){
+    addChat("sre",text);
+    const S=stRef.current;
+    const node=S.focusNode;
+    const incident=S.incidents.find(i=>i.node===node && i.stage!=="resolved");
+    if(text.startsWith("/")){
+      const [cmd] = text.split(" ");
+      const spec = SLASH_COMMANDS.find(c=>c.cmd===cmd);
+      if(!spec){ addChat("agent",`Unknown command ${cmd}. Type "/" to see available actions.`); return; }
+      if(spec.kind==="action"){
+        const tid=queueRepair(node,spec.action,6000);
+        addLog("op",`SRE via console: queued ${spec.action} on ${node} (${tid}).`,node);
+        if(incident) updateIncident(node,{stage:"repairing",
+          suggestion:incident.suggestion?{...incident.suggestion,chosenAction:spec.action}:undefined});
+        addChat("agent",`Queued ${spec.action} on ${node} — repair task ${tid}, 4 ticks. Watching post-fix window.`);
+        return;
+      }
+      if(spec.kind==="borg"){
+        const tid=queueRepair(node,"restart_node",8000);
+        addLog("op",`SRE via console: launched raw Borg job on ${node} (${tid}).`,node);
+        addChat("agent",`Borg job ${tid} launched on ${node} (restart_node). Use /ramp_fans, /migrate, etc. for a specific action.`);
+        return;
+      }
+      if(spec.kind==="escalate"){ escalate(incident||{node}); return; }
+      if(cmd==="/diagnose"){
+        if(!incident){ addChat("agent",`No active incident on ${node}. Telemetry nominal — nothing to diagnose.`); return; }
+        const sug=buildSuggestion(S.nodes,S.agentGen,incident.faultType,node);
+        updateIncident(node,{stage:"suggested",suggestion:sug});
+        addChat("agent",`Re-diagnosed ${node}: ${sug.diagnosis} → ${sug.action} (conf ${sug.conf}).`);
+        return;
+      }
+      // query-type: /explain /history /status
+      addChat("agent",askAgent({text:cmd.slice(1),incident,node,
+        nodeState:S.nodes.find(n=>n.id===node),agentGen:S.agentGen,corrections:S.kgCorr}));
+      return;
+    }
+    // free-text question → agent
+    addChat("agent",askAgent({text,incident,node,
+      nodeState:S.nodes.find(n=>n.id===node),agentGen:S.agentGen,corrections:S.kgCorr}));
   }
 
   return (
@@ -634,9 +1005,10 @@ export default function InfraBrainApp() {
       <div style={{marginTop:12,marginBottom:12}}>
         <TabBar active={tab} onSelect={setTab}/>
       </div>
-      {tab==="Observability"  && <ObservabilityTab nodes={nodes} selected={selected} onSelect={setSelected}
-        history={histRef.current} incident={incident} agentGen={agentGen} repair={repair}
-        onAccept={accept} onOverride={override} log={log}/>}
+      {tab==="Observability"  && <ObservabilityTab nodes={nodes} focusNode={focusNode} onSelect={setFocusNode}
+        history={histRef.current} incidents={incidents} agentGen={agentGen} repairs={repairs}
+        onAccept={accept} onOverride={override} onEscalate={escalate}
+        onCancelRepair={cancelRepair} log={log} chat={chat} onChat={handleChat}/>}
       {tab==="Learning Lab"   && <LearningTab/>}
       {tab==="Knowledge Graph"&& <KnowledgeGraphTab corrections={kgCorr}/>}
       {tab==="Training Data"  && <TrainingDataTab pairs={pairs}/>}
