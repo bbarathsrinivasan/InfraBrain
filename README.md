@@ -20,22 +20,127 @@ Three learning loops, three timescales:
 
 ---
 
-## Run it
+## Setup & run
+
+### Prerequisites
+
+- **Node.js 18+** (frontend)
+- **Python 3.10+** (backend)
+- **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey) (for live LLM mode)
+
+### 1. Clone and install
 
 ```bash
-# Frontend only (demo mode — in-browser sim + scripted fallback)
-npm install
-npm run dev        # http://localhost:5175
+git clone <repo-url>
+cd infrabrain
 
-# Full stack (real Gemini LLM + Python sim)
-cp backend/.env.example backend/.env   # add GEMINI_API_KEY
-cd backend && pip install -r requirements.txt && python main.py
-# Then set VITE_BACKEND_WS / VITE_BACKEND_HTTP in .env and npm run dev
+# Frontend
+npm install
+
+# Backend
+cd backend
+python3 -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+cd ..
 ```
 
-Requires Node 18+. Stack: Vite + React 18 + Recharts. Backend: FastAPI + SQLite + Gemini API.
+### 2. Configure environment
 
-**Try this:** hit `▶ Gen-0 episode`, let the faults fire (t010 fan on R2-N5, t022 memory on R3-N2), watch gen-0 misdiagnose fan failure as CPU overload, then hit `▶ Gen-4 replay` to see the corrected diagnosis with KG evidence cited.
+**Backend** — copy and edit:
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+```env
+# backend/.env
+GEMINI_API_KEY=your-key-here
+PORT=8002
+# USE_SCRIPTED_AGENT=true   # optional — force scripted agent (no API calls)
+```
+
+**Frontend** — copy and edit (needed for full-stack mode):
+
+```bash
+cp .env.example .env
+```
+
+```env
+# .env (project root)
+VITE_BACKEND_WS=ws://localhost:8002/api/stream
+VITE_BACKEND_HTTP=http://localhost:8002
+```
+
+Leave root `.env` empty or remove `VITE_BACKEND_*` to run **demo mode** (in-browser simulator + scripted agent, no backend).
+
+> **Note:** `.env` files are gitignored. Never commit API keys.
+
+### 3. Start the backend
+
+```bash
+cd backend
+source venv/bin/activate
+python main.py
+# → FastAPI on http://localhost:8002
+#   WebSocket: ws://localhost:8002/api/stream
+```
+
+Or without auto-reload:
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8002
+```
+
+### 4. Start the frontend
+
+In a second terminal, from the project root:
+
+```bash
+npm run dev
+# → http://localhost:5175
+```
+
+### 5. Verify connection
+
+Open the frontend. The status badge in the top-right shows:
+
+| Badge | Meaning |
+|-------|---------|
+| `demo mode` | No backend `.env` — in-browser sim only |
+| `connecting…` | Backend URL set, waiting for WebSocket |
+| `backend ●` (green) | Live backend connected |
+
+**Quick health checks:**
+
+```bash
+curl http://localhost:8002/api/metrics
+curl http://localhost:8002/api/kg
+```
+
+### 6. Try the demo flow
+
+1. Click **▶ Gen-0 episode**, then **▶ RUN**
+2. Faults fire at **t010** (R2-N5 fan) and **t022** (R3-N2 memory)
+3. Gen-0 misdiagnoses fan failure as CPU overload → accept, then watch auto-override teach the KG
+4. Click **▶ Gen-4 replay** — agent uses KG corrections and gets fan failure right
+5. Open **Learning Lab** → **Run meta-agent** to see a live code-diff proposal from episode traces
+6. **Knowledge Graph** tab → **↺ Reset KG** clears corrections (seed taxonomy preserved)
+
+---
+
+## Demo mode vs. backend mode
+
+| Feature | Demo mode (no `.env`) | Backend mode |
+|---------|----------------------|--------------|
+| Simulator | In-browser JS | Python `step_nodes()`, authoritative |
+| Diagnosis | Scripted `buildSuggestion()` | Gemini (`gemini-flash-latest`) + KG context |
+| SRE chat | Scripted `askAgent()` | Gemini streaming via `/api/chat` |
+| KG corrections | React state (resets on refresh) | SQLite, persists across episodes |
+| Meta-agent | Static diff string | Live `POST /api/meta` from traces |
+| Metrics / Learning Lab | Static charts | Live `/api/metrics` polling |
+
+Set `USE_SCRIPTED_AGENT=true` in `backend/.env` to run the full backend stack without Gemini API calls (scripted diagnosis + chat + meta-agent).
 
 ---
 
@@ -46,53 +151,63 @@ Use this table when explaining the demo to judges.
 | Component | Status | Detail |
 |-----------|--------|--------|
 | **Fault simulator** | ✅ Real (Python) | Thermal model `dT = 0.085·util − 0.082·fan + mem_heat + noise`; fan decay −3%/tick; mem leak +2.4%/tick. Seeded, deterministic. |
-| **Watcher** | ✅ Real | z-score anomaly detection in backend; inline temp threshold in frontend demo mode. |
-| **Task Agent (diagnosis)** | ✅ Real (Gemini API) | `gemini-2.0-flash`, KG-augmented prompt, structured JSON output. Falls back to scripted if API unavailable. |
-| **Knowledge Graph** | ✅ Real (SQLite) | Corrections persist across episodes. Jaccard similarity retrieval. Backend: `kg.py`. |
-| **Meta-Agent** | ✅ Real (Gemini API) | Reads episode traces, clusters failures, proposes unified diff. `POST /api/meta` triggers it. |
-| **SRE Console chat** | ✅ Real (Gemini streaming) | SSE streaming, system prompt includes node state + active incident + KG corrections. |
+| **Watcher** | ✅ Real | Temp threshold in backend; inline check in frontend demo mode. |
+| **Task Agent (diagnosis)** | ✅ Real (Gemini API) | `gemini-flash-latest`, KG-augmented prompt, structured JSON. Scripted fallback if key missing or `USE_SCRIPTED_AGENT=true`. |
+| **Knowledge Graph** | ✅ Real (SQLite) | Corrections persist across episodes. Jaccard similarity retrieval. `backend/kg.py`. |
+| **Meta-Agent** | ✅ Real (Gemini API) | Reads episode traces, proposes unified diff. `POST /api/meta`. |
+| **SRE Console chat** | ✅ Real (Gemini streaming) | SSE streaming; system prompt includes node state + incident + KG corrections. |
 | **WebSocket telemetry** | ✅ Real | Backend pushes tick/incident/repair events; frontend reconnects on drop. |
-| **Override rate chart** | 🟡 Simulated history | 40-episode mock history showing realistic decay with spikes at new fault classes. Live overrides do update KG + pairs. |
-| **Composite score / gen curves** | 🟡 Static mock | `GEN_DATA` in JSX — shows gen-0→5 improvement. Reflects real architecture, not live runs. |
-| **Agent version history** | 🟡 Realistic mock | `src/versions/gen{0-5}.json` — real diffs, real metrics, real known-failure progression. Not auto-generated at runtime. |
-| **"gen-5 deployed" indicator** | 🟡 Simulated | Episodes run as gen-0 or gen-4 per button. `gen5.json` prompt is what `agent.py` actually uses. |
-| **Alibaba trace workload** | 🟡 Partial | Job names (`job-1009(trace)` etc.) reference the trace. Full replay needs ingestion pipeline — roadmap item. |
-| **DPO / GRPO training** | 🔴 Future scope | Preference pairs export is live. Training loop not implemented — needs more episodes and a fine-tuning run. |
+| **Override rate chart** | 🟡 Mixed | Demo curve when traces sparse; live overrides update KG + metrics. |
+| **Composite score / gen curves** | 🟡 Static mock | `GEN_DATA` in JSX for full gen-0→5 arc; live metrics overlay where available. |
+| **Agent version history** | 🟡 Realistic mock | `src/versions/gen{0-5}.json` — real diffs and metrics, not auto-generated at runtime. |
+| **DPO / GRPO training** | 🔴 Future scope | Preference pairs export is live. Training loop not implemented. |
+
+---
+
+## API surface (backend)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| WS | `/api/stream` | Live telemetry, incidents, repairs, KG updates |
+| POST | `/api/chat` | Streaming SRE console (SSE) |
+| GET | `/api/kg` | Corrections, pairs, traces snapshot |
+| GET | `/api/kg/retrieve?sig=...` | Top-k similarity retrieval |
+| POST | `/api/kg/reset` | Clear corrections, pairs, traces |
+| GET | `/api/metrics` | Override rate, MTTR, composite, reward terms |
+| POST | `/api/meta` | Run meta-agent on episode traces |
+| GET | `/api/state` | Current simulator snapshot |
+
+See [docs/BACKEND.md](docs/BACKEND.md) for architecture details.
 
 ---
 
 ## Three-phase production deployment
 
-*(Moved from the Training Data tab — reference for presentation)*
-
 **Phase 01 — Shadow mode**
-Seed KG from postmortems and playbooks. Run in shadow mode against fault-injection tooling — accumulate corrections before touching live SREs. No operator impact.
+Seed KG from postmortems and playbooks. Run in shadow mode against fault-injection tooling — accumulate corrections before touching live SREs.
 
 **Phase 02 — Suggest-only with SREs** ← *This demo is Phase 02*
-Agent suggests, SRE decides. Every override writes a correction to the KG and exports a preference pair. Override rate falls as KG grows. The agent never acts autonomously.
+Agent suggests, SRE decides. Every override writes a correction to the KG and exports a preference pair. Override rate falls as KG grows.
 
 **Phase 03 — DPO / GRPO training**
-Finetune a small model (3–8B, LoRA) via DPO on the accumulated preference pairs. Gate on held-out regression before deploy. GRPO against the simulator's composite reward is the next step after DPO.
-
-> **Why not RL now?** Two days → not enough episodes for stable RL. Preference pairs are the honest bridge. The simulator IS the RL environment — nothing new to build when we get there.
+Finetune a small model via DPO on accumulated preference pairs. GRPO against the simulator's composite reward is the next step.
 
 ---
 
 ## Key design decisions
 
-- **Suggest-only.** The agent never remediates autonomously — an SRE Accepts or Overrides. Every action is human-gated.
-- **Non-parametric memory.** Corrections live in a knowledge graph, not model weights: no catastrophic forgetting, every lesson auditable and reversible. A bad lesson is a `DELETE`, not an un-training run.
-- **Statistical watcher** (not an LLM) for anomaly detection — cheap, fast, always-on.
-- **Deceptive symptom by design.** Fan failure → thermal throttling → util *drops* → gen-0 reads this as CPU idle and misdiagnoses. Gen-5 has an explicit CRITICAL DIAGNOSTIC NOTE in its prompt. This is the story arc of the demo.
-- **Held-out eval gate.** Meta-agent code proposals are only accepted if the held-out composite score improves. Prevents the meta-agent from memorising training scenarios.
+- **Suggest-only.** The agent never remediates autonomously — an SRE Accepts or Overrides.
+- **Non-parametric memory.** Corrections live in a knowledge graph, not model weights.
+- **Deceptive symptom by design.** Fan failure → thermal throttling → util *drops* → gen-0 misdiagnoses as CPU idle.
+- **Held-out eval gate.** Meta-agent proposals only accepted if held-out composite improves.
 
 ---
 
 ## Docs
 
-- **[docs/METRICS_AND_LEARNING.md](docs/METRICS_AND_LEARNING.md)** — composite reward formula, how each metric drives model/agent updates, DPO/GRPO roadmap
-- **[docs/BACKEND.md](docs/BACKEND.md)** — API surface, KG schema, meta-agent design, migration checklist
+- **[docs/METRICS_AND_LEARNING.md](docs/METRICS_AND_LEARNING.md)** — composite reward formula, metric → update mapping
+- **[docs/BACKEND.md](docs/BACKEND.md)** — API surface, KG schema, meta-agent design
 
 ## Reference
 
-Hyperagents (arXiv 2603.19461) — DGM-Hyperagents: a task agent and a meta agent in one editable program. The meta agent rewrites the task-agent code from episode traces; an archive of all variants is kept, parents selected by score × exploration, and a train/held-out split measures generalisation.
+Hyperagents (arXiv 2603.19461) — DGM-Hyperagents: task agent + meta agent in one editable program; archive of variants, parents selected by score × exploration, train/held-out split for generalisation.

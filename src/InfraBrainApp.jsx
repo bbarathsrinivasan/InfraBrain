@@ -112,6 +112,33 @@ const KG_SEED_EDGES = [
 ];
 const ACTIONS = ["ramp_fans","throttle_job","migrate_workload","drain_node","restart_node","escalate","no_action"];
 
+/* ── KG path-chain constants ─────────────────────────────────────────── */
+// For each remediation action: the key observable symptom and the seed edges that form the path
+const ACTION_TO_SYM = {
+  ramp_fans:"s3", throttle_job:"s2", migrate_workload:"s5",
+  drain_node:"s4", restart_node:"s5", escalate:"s4", ckpt_restart:"s8",
+};
+const ACTION_TO_ACT_NODE = {
+  ramp_fans:"a1", throttle_job:"a2", migrate_workload:"a3",
+  drain_node:"a4", restart_node:"a5", escalate:"a6", ckpt_restart:"a7",
+};
+const FIX_PATH_EDGES = {
+  ramp_fans:        [["s1","c1"],["s3","c1"],["c1","a1"]],
+  throttle_job:     [["s1","c2"],["s2","c2"],["c2","a2"]],
+  migrate_workload: [["s5","c3"],["c3","a3"]],
+  drain_node:       [["s4","c4"],["c4","a4"]],
+  restart_node:     [["s5","c3"],["c3","a5"]],
+  escalate:         [["s4","c4"],["c4","a6"]],
+  ckpt_restart:     [["s8","c7"],["c7","a7"]],
+};
+// Correction nodes sit at x=272 (midpoint between cause col x:195 and action col x:348)
+const CORR_X = 272;
+const ACT_NODE_Y = {a1:28,a2:96,a3:164,a4:232,a5:300,a6:368,a7:436};
+function corrNodePos(applied, idxForAction=0){
+  const actId = ACTION_TO_ACT_NODE[applied];
+  return {x:CORR_X, y:(actId ? ACT_NODE_Y[actId] : 200) + idxForAction*22};
+}
+
 /* Multiple fault sources → multiple concurrent incidents */
 const FAULTS = [
   {node:"R2-N5", type:"fan", start:10},
@@ -961,7 +988,7 @@ function AgentVersionsPanel() {
 function LearningTab({metrics, metaResult, onRunMeta, metaLoading}) {
   const [showDiff,setShowDiff] = useState(false);
   const overrideData = metrics?.overrideTrend || OVERRIDE_DATA;
-  const genData = metrics?.genScores || GEN_DATA;
+  const genData = GEN_DATA; // always show full gen 0-5 arc
   const metaDiff = metaResult?.diff || META_DIFF;
   const tk = {fill:T.faint, fontSize:9};
   const tt = {contentStyle:{background:T.soft,border:`1px solid ${T.line}`,fontSize:11}};
@@ -1071,13 +1098,34 @@ function RetrievalTracePanel({hits, signature}) {
 }
 
 /* ── KG: STATS ───────────────────────────────────────────────────────── */
-function KGStatsPanel({corrections, hitRate}) {
+function KGStatsPanel({corrections, hitRate, onReset}) {
+  const [confirming, setConfirming] = useState(false);
   const counts = {symptom:KG_NODES.filter(n=>n.kind==="symptom").length,
     cause:KG_NODES.filter(n=>n.kind==="cause").length,
     action:KG_NODES.filter(n=>n.kind==="action").length,
     correction:corrections.length};
   const rate = hitRate ?? Math.min(0.98, 0.62 + corrections.length*0.05);
-  return <Panel title="KG stats">
+
+  function doReset() { setConfirming(false); onReset && onReset(); }
+
+  return <Panel title="KG stats"
+    right={!confirming
+      ? <button onClick={()=>setConfirming(true)} style={{
+          fontFamily:MONO,fontSize:10,background:"transparent",cursor:"pointer",
+          border:`1px solid ${T.faint}`,color:T.faint,borderRadius:5,padding:"2px 8px"}}>
+          ↺ Reset KG
+        </button>
+      : <div style={{display:"flex",gap:5,alignItems:"center"}}>
+          <span style={{fontFamily:MONO,fontSize:10,color:T.warn}}>clear all corrections?</span>
+          <button onClick={doReset} style={{fontFamily:MONO,fontSize:10,background:T.crit+"22",
+            border:`1px solid ${T.crit}`,color:T.crit,borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>
+            yes
+          </button>
+          <button onClick={()=>setConfirming(false)} style={{fontFamily:MONO,fontSize:10,background:"transparent",
+            border:`1px solid ${T.faint}`,color:T.faint,borderRadius:5,padding:"2px 8px",cursor:"pointer"}}>
+            cancel
+          </button>
+        </div>}>
     <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:10}}>
       {[["symptoms",counts.symptom,T.warn],["causes",counts.cause,T.crit],
         ["actions",counts.action,T.ok],["corrections",counts.correction,T.kg]].map(([l,v,c])=>
@@ -1088,7 +1136,7 @@ function KGStatsPanel({corrections, hitRate}) {
     </div>
     <MeterRow label="retrieval hit-rate (matching sig found)" value={rate} color={T.agent} right={(rate*100).toFixed(0)+"%"}/>
     <div style={{fontFamily:MONO,fontSize:10,color:T.faint,marginTop:2}}>
-      Hit-rate climbs with each correction — more institutional memory, fewer repeat misdiagnoses.
+      Seed nodes (taxonomy) are kept — only operator corrections &amp; traces are cleared.
     </div>
   </Panel>;
 }
@@ -1214,15 +1262,56 @@ function KnowledgeDBPanel() {
 }
 
 /* ── KNOWLEDGE GRAPH TAB ─────────────────────────────────────────────── */
-function KnowledgeGraphTab({corrections, retrievalHits, focusNode, hitRate}) {
+function KnowledgeGraphTab({corrections, retrievalHits, focusNode, hitRate, onReset, incidents=[]}) {
   const [sel,setSel] = useState(null);
   const sig = `temp↑/fan↓ @ ${focusNode || "R2-N5"}`;
   const kindColor = {symptom:T.warn, cause:T.crit, action:T.ok, correction:T.kg};
   const kindLabel = {symptom:"Symptom", cause:"Root cause", action:"Remediation", correction:"Operator correction"};
+
+  // Determine the active fix action from the focused incident or latest correction
+  const focusInc = incidents.find(i=>i.node===focusNode);
+  const activeAction =
+    focusInc?.suggestion?.chosenAction ||
+    focusInc?.suggestion?.action ||
+    corrections[corrections.length-1]?.applied ||
+    "ramp_fans";
+
+  // Build the active path edge set (all corrections + active incident)
+  const activeEdgeKeys = new Set([
+    ...(FIX_PATH_EDGES[activeAction]||[]).map(([f,t])=>`${f}:${t}`),
+    ...corrections.flatMap(c=>(FIX_PATH_EDGES[c.applied]||[]).map(([f,t])=>`${f}:${t}`)),
+  ]);
+
+  // Active path node set (for node highlighting)
+  const activeNodeIds = new Set([
+    ...(FIX_PATH_EDGES[activeAction]||[]).flat(),
+    ...corrections.flatMap(c=>(FIX_PATH_EDGES[c.applied]||[]).flat()),
+    ...corrections.map(c=>c.id),
+  ]);
+
+  // Correction edges: key symptom → corrNode → applied action node (semantically correct)
+  const corrEdges = corrections.flatMap(c=>{
+    const sym = ACTION_TO_SYM[c.applied] || "s1";
+    const act = ACTION_TO_ACT_NODE[c.applied] || "a1";
+    return [
+      {from:sym, to:c.id, kind:"correction"},
+      {from:c.id, to:act,  kind:"correction"},
+    ];
+  });
+
   const allNodes = [...KG_NODES, ...corrections];
-  const corrEdges = corrections.flatMap(c=>[{from:"s1",to:c.id,kind:"correction"},{from:c.id,to:"a1",kind:"correction"}]);
-  const allEdges = [...KG_SEED_EDGES.map(([f,t])=>({from:f,to:t,kind:"seed"})), ...corrEdges];
+  const allEdges = [
+    ...KG_SEED_EDGES.map(([f,t])=>({from:f,to:t,kind:"seed"})),
+    ...corrEdges,
+  ];
   const selNode = allNodes.find(n=>n.id===sel);
+
+  // Active path description for the legend
+  const pathLabel = activeAction ? activeAction.replace(/_/g," ") : "ramp fans";
+  const faultLabel = activeAction==="migrate_workload"||activeAction==="restart_node" ? "mem leak" :
+                     activeAction==="drain_node"||activeAction==="escalate" ? "node failure" :
+                     activeAction==="throttle_job" ? "cpu overload (gen-0)" : "fan failure";
+
   return <div style={{display:"grid",gridTemplateColumns:"1fr 300px",gap:12,alignItems:"start"}}>
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
     <Panel title="Knowledge graph"
@@ -1232,35 +1321,63 @@ function KnowledgeGraphTab({corrections, retrievalHits, focusNode, hitRate}) {
         border:`1px solid ${T.agent}44`,borderRadius:4,padding:"2px 6px"}}>
         ↗ Alibaba trace dataset
       </a>}>
-      <svg viewBox="0 0 430 480" style={{width:"100%",height:480}}>
+      {/* Active trace banner */}
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8,
+        background:T.soft,borderRadius:6,padding:"5px 10px"}}>
+        <span style={{fontFamily:MONO,fontSize:9,color:T.faint,letterSpacing:1}}>ACTIVE TRACE</span>
+        <span style={{fontFamily:MONO,fontSize:10,color:T.agent}}>
+          {faultLabel} → {pathLabel}
+        </span>
+        {corrections.length===0 && <span style={{fontFamily:MONO,fontSize:9,color:T.faint}}>
+          · no corrections yet
+        </span>}
+        {corrections.length>0 && <span style={{fontFamily:MONO,fontSize:9,color:T.kg}}>
+          · {corrections.length} correction{corrections.length>1?"s":""} on path
+        </span>}
+      </div>
+      <svg viewBox="0 0 430 490" style={{width:"100%",height:490}}>
+        {/* Draw seed edges — active path bright, others heavily dimmed */}
         {allEdges.map((e,i)=>{
           const A=allNodes.find(n=>n.id===e.from), B=allNodes.find(n=>n.id===e.to);
           if(!A||!B) return null;
+          if(e.kind==="correction"){
+            return <line key={i} x1={A.x} y1={A.y} x2={B.x} y2={B.y}
+              stroke={T.kg} strokeWidth={2} strokeDasharray="6 3" strokeOpacity={0.9}/>;
+          }
+          const onPath = activeEdgeKeys.has(`${e.from}:${e.to}`);
           return <line key={i} x1={A.x} y1={A.y} x2={B.x} y2={B.y}
-            stroke={e.kind==="correction"?T.kg:T.line}
-            strokeWidth={e.kind==="correction"?1.5:1}
-            strokeDasharray={e.kind==="correction"?"4 2":undefined} strokeOpacity={.7}/>;
+            stroke={onPath ? T.agent : T.faint}
+            strokeWidth={onPath ? 2 : 0.75}
+            strokeOpacity={onPath ? 0.9 : 0.18}/>;
         })}
+        {/* Draw nodes — active path nodes full brightness, others dim */}
         {allNodes.map(n=>{
           const col=kindColor[n.kind]||T.muted, isSel=n.id===sel;
+          const onPath = activeNodeIds.has(n.id);
           const r = n.kind==="correction"?8:n.kind==="symptom"?6:n.kind==="action"?6:7;
           return <g key={n.id} onClick={()=>setSel(isSel?null:n.id)} style={{cursor:"pointer"}}>
             <circle cx={n.x} cy={n.y} r={r}
-              fill={col} fillOpacity={isSel?1:.75}
-              stroke={isSel?T.text:col} strokeWidth={isSel?2:0.5}/>
+              fill={col} fillOpacity={isSel?1:onPath?0.85:0.25}
+              stroke={isSel?T.text:onPath?col:"transparent"} strokeWidth={isSel?2:onPath?1:0}/>
             <text x={n.x} y={n.y-r-2} textAnchor="middle"
-              fill={isSel?T.text:T.muted} fontSize={7.5} fontFamily={MONO}>{n.label}</text>
+              fill={isSel?T.text:onPath?T.muted:T.faint}
+              fontSize={7.5} fontFamily={MONO} opacity={onPath?1:0.4}>{n.label}</text>
           </g>;
         })}
       </svg>
       <div style={{fontFamily:MONO,fontSize:10,color:T.muted,display:"flex",gap:14,marginTop:4}}>
         {Object.entries(kindLabel).map(([k,l])=><span key={k}><Dot color={kindColor[k]}/>{l}</span>)}
+        <span style={{marginLeft:"auto",color:T.faint}}>
+          <span style={{color:T.agent}}>━</span> active path
+          <span style={{color:T.kg,marginLeft:8}}>╌</span> correction
+          <span style={{opacity:.35,marginLeft:8}}>━</span> unused
+        </span>
       </div>
     </Panel>
     <RetrievalTracePanel hits={retrievalHits} signature={sig}/>
     </div>
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
-      <KGStatsPanel corrections={corrections} hitRate={hitRate ?? (retrievalHits?.length ? Math.min(0.98, 0.62 + corrections.length*0.05) : undefined)}/>
+      <KGStatsPanel corrections={corrections} hitRate={hitRate ?? (retrievalHits?.length ? Math.min(0.98, 0.62 + corrections.length*0.05) : undefined)} onReset={onReset}/>
       <Panel title="Node detail" sub={selNode?selNode.label:"click a node"}>
         {!selNode && <div style={{fontFamily:MONO,fontSize:11,color:T.faint}}>
           Amber nodes are operator corrections — each one is a lesson the system learned from human disagreement.
@@ -1735,18 +1852,24 @@ export default function InfraBrainApp() {
       case "escalation":
         addChat("sys",`⚑ ${msg.message||"Escalated to on-call (L2)."}`);
         break;
+      case "kg_reset":
+        setKgCorr([]);
+        setPairs([]);
+        break;
       default: break;
     }
   }
 
   function _hydrateKgCorr(corrections){
-    setKgCorr(corrections.map((c,i)=>({
-      ...c,
-      kind:"correction",
-      label:`override #C${i+1}`,
-      x:120+(i%4)*60, y:290,
-      ctx:c.context||"",
-    })));
+    const countPerAction = {};
+    setKgCorr(corrections.map((c,i)=>{
+      const app = c.applied || "ramp_fans";
+      const idx = countPerAction[app] || 0;
+      countPerAction[app] = idx + 1;
+      const pos = corrNodePos(app, idx);
+      return {...c, kind:"correction", label:`override #C${i+1}`,
+        x:pos.x, y:pos.y, ctx:c.context||""};
+    }));
   }
 
   const addLog = useCallback((kind,text,node) =>
@@ -1754,6 +1877,17 @@ export default function InfraBrainApp() {
   const addChat = useCallback((role,text,thinking=false) =>
     setChat(c=>[...c,{role,text,thinking}].slice(-60)),[]);
   const backendConnected = backendStatus==="connected";
+
+  async function handleResetKG() {
+    if(backendConnected && BACKEND_HTTP){
+      try {
+        await fetch(`${BACKEND_HTTP}/api/kg/reset`,{method:"POST"});
+      } catch(e) { console.error("KG reset failed",e); }
+    }
+    // Always clear frontend state immediately — WS kg_reset will also arrive in backend mode
+    setKgCorr([]);
+    setPairs([]);
+  }
 
   function buildSuggestion(n, gen, faultType, nodeId) {
     const nd=n.find(x=>x.id===nodeId)||{};
@@ -1784,8 +1918,14 @@ export default function InfraBrainApp() {
   }
 
   function recordOverrideState(rejected, applied, node, t){
-    setKgCorr(k=>[...k,{id:`corr-${k.length+1}`,label:`override #C${k.length+1}`,kind:"correction",
-      x:120+(k.length%4)*60,y:290,rejected,applied,ctx:`${node} gen-${stRef.current.agentGen}`}]);
+    // Skip: same action means the agent was already right — nothing to teach
+    if(rejected === applied) return;
+    setKgCorr(k=>{
+      const idxForAction = k.filter(c=>c.applied===applied).length;
+      const pos = corrNodePos(applied, idxForAction);
+      return [...k,{id:`corr-${k.length+1}`,label:`override #C${k.length+1}`,kind:"correction",
+        x:pos.x, y:pos.y, rejected, applied, ctx:`${node} gen-${stRef.current.agentGen}`}];
+    });
     setPairs(p=>[...p,{id:p.length+1,ctx:`sig: temp↑/fan↓ @ ${node} t${t}`,
       rejected,chosen:applied,source:"operator_override"}]);
   }
@@ -2102,7 +2242,8 @@ export default function InfraBrainApp() {
       {tab==="Learning Lab"    && <LearningTab metrics={liveMetrics} metaResult={metaResult}
         onRunMeta={backendConnected ? handleRunMeta : null} metaLoading={metaLoading}/>}
       {tab==="Knowledge Graph" && <KnowledgeGraphTab corrections={kgCorr} retrievalHits={retrievalHits}
-        focusNode={focusNode} hitRate={liveMetrics?.hitRate}/>}
+        focusNode={focusNode} hitRate={liveMetrics?.hitRate} onReset={handleResetKG}
+        incidents={incidents}/>}
       {tab==="Training Data"   && <TrainingDataTab pairs={pairs} priorCount={237}/>}
       <div style={{marginTop:14,fontFamily:MONO,fontSize:10,color:T.faint}}>
         INFRABRAIN · suggest-only: nothing runs without SRE approval · self-modification sandboxed to simulator

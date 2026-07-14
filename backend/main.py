@@ -196,7 +196,8 @@ async def _sim_tick():
                 inc["node"])
             corr, _ = _write_correction(bad_action, "ramp_fans", inc["node"])
             _record_trace(inc, "override", sre_action="ramp_fans")
-            await _broadcast_kg(corr)
+            if corr:
+                await _broadcast_kg(corr)
             remove_repairs.add(rep["taskId"])
             new_rep = _make_repair(inc["node"], "ramp_fans", prefix=7000)
             sim.repairs.append(new_rep)
@@ -266,6 +267,9 @@ def _make_repair(node: str, action: str, prefix: int = 4000) -> dict:
 
 
 def _write_correction(rejected: str, applied: str, node: str):
+    # No-op: same action means the agent was right — nothing to teach
+    if rejected == applied:
+        return None, None
     fan_action = applied in ("ramp_fans",)
     sig = f"temp↑/fan↓ @ {node}" if fan_action else f"temp↑/mem↑ @ {node}"
     corr = {
@@ -435,7 +439,8 @@ async def _handle_ws(msg: dict, ws: WebSocket):
             _record_trace(inc, "override", sre_action=new_action)
             await broadcast({"type": "incident_update", "incident": inc})
             await broadcast({"type": "repairs",          "repairs":  sim.repairs})
-            await _broadcast_kg(corr)
+            if corr:
+                await _broadcast_kg(corr)
 
     # ── SRE: escalate ─────────────────────────────────────────────────
     elif action == "escalate":
@@ -667,6 +672,26 @@ Document:
         "source":  source,
         "nodes":   nodes,
     }
+
+
+# ── REST: KG reset ──────────────────────────────────────────────────────
+
+@app.post("/api/kg/reset")
+async def kg_reset():
+    """Clear all corrections, pairs, traces, and ingested doc nodes/edges."""
+    import sqlite3
+    conn = sqlite3.connect(kgdb.DB_PATH)
+    conn.executescript("""
+        DELETE FROM corrections;
+        DELETE FROM pairs;
+        DELETE FROM traces;
+        DELETE FROM kg_doc_nodes;
+        DELETE FROM kg_doc_edges;
+    """)
+    conn.commit()
+    conn.close()
+    await broadcast({"type": "kg_reset"})
+    return {"ok": True, "message": "KG cleared — seed taxonomy preserved in memory."}
 
 
 # ── REST: meta-agent ────────────────────────────────────────────────────

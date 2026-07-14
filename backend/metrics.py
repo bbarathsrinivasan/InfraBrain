@@ -113,6 +113,6 @@ def compute_metrics(
         "agentGen":         agent_gen,
         "traceCount":       total,
         "overrideTrend":    override_trend(traces),
-        "genScores":        GEN_SCORES[: max(3, min(agent_gen + 2, len(GEN_SCORES)))],
+        "genScores":        GEN_SCORES,
         "rewardTerms":      reward_terms,
     }
