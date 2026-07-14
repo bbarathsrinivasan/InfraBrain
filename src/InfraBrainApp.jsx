@@ -312,15 +312,19 @@ function Chip({label, value, color=T.text}) {
     <span style={{color:T.faint}}>{label} </span><span style={{color}}>{value}</span>
   </div>;
 }
-function Panel({title, sub, children, dashed, style, right}) {
+function Panel({title, sub, children, dashed, style, right, fillHeight}) {
   return <div style={{background:T.panel,border:`1px solid ${dashed?T.faint:T.line}`,
-    borderStyle:dashed?"dashed":"solid",borderRadius:10,padding:12,...style}}>
+    borderStyle:dashed?"dashed":"solid",borderRadius:10,padding:12,
+    ...(fillHeight?{display:"flex",flexDirection:"column",minHeight:0}:{}),
+    ...style}}>
     {(title||right) && <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:sub?2:0}}>
       {title && <div style={{fontSize:12.5,fontWeight:600}}>{title}</div>}
       <div style={{flex:1}}/>{right}
     </div>}
     {sub   && <div style={{fontFamily:MONO,fontSize:10,color:T.muted,marginBottom:8}}>{sub}</div>}
-    {children}
+    {fillHeight
+      ? <div style={{flex:1,minHeight:0,overflowY:"auto"}}>{children}</div>
+      : children}
   </div>;
 }
 function Btn({children, color=T.agent, onClick, disabled, style}) {
@@ -365,12 +369,12 @@ function StatusBar({tick,running,agentGen,episodes,corrections,onRun,onGen0,onGe
 }
 
 /* ── TAB BAR ─────────────────────────────────────────────────────────── */
-const TABS = ["Overview","Observability","Learning Lab","Knowledge Graph","Training Data"];
+const TABS = ["Overview","Observability","Knowledge Graph","Learning Lab","Training Data"];
 const TAB_HINTS = {
   "Overview":         "system architecture — three self-improving loops · meta-agent evolves task-agent code offline",
   "Observability":    "real-time fleet view — watch fault develop, agent suggest, override teach the system",
+  "Knowledge Graph":  "non-parametric memory — amber nodes are operator corrections · drop docs to evolve the graph",
   "Learning Lab":     "agent evolution — 6 generations of incremental prompt + retrieval improvements on held-out scenarios",
-  "Knowledge Graph":  "non-parametric memory — amber nodes are operator corrections, auditable and reversible",
   "Training Data":    "future scope — preference pairs ready for DPO · simulator ready for GRPO",
 };
 function TabBar({active, onSelect}) {
@@ -474,12 +478,12 @@ function RackGrid({nodes, selected, repairs, onSelect}) {
 }
 
 /* ── REPAIR TASK QUEUE ───────────────────────────────────────────────── */
-function RepairQueue({repairs, onCancel}) {
-  return <Panel title="Repair task queue" sub="Borg-style RT jobs · suggest-only: queued by SRE, never autonomous">
+function RepairQueue({repairs, onCancel, style, fillHeight}) {
+  return <Panel title="Repair task queue" sub="Borg-style RT jobs · suggest-only: queued by SRE, never autonomous" style={style} fillHeight={fillHeight}>
     {repairs.length===0 && <div style={{fontFamily:MONO,fontSize:11,color:T.faint}}>
       No repair tasks in flight. Accept an incident or use /borg to queue one.
     </div>}
-    <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:210,overflowY:"auto"}}>
+    <div style={{display:"flex",flexDirection:"column",gap:6}}>
       {repairs.map(r => {
         const done=r.effectApplied;
         return <div key={r.taskId} style={{display:"flex",alignItems:"center",gap:8,
@@ -547,7 +551,7 @@ function IncidentTimeline({stage}) {
 }
 
 /* ── INCIDENT PANEL ──────────────────────────────────────────────────── */
-function IncidentPanel({incident, agentGen, onAccept, onOverride, onEscalate}) {
+function IncidentPanel({incident, agentGen, onAccept, onOverride, onEscalate, style, fillHeight}) {
   const [picking,setPicking] = useState(false);
   const s=incident?.suggestion, stage=incident?.stage;
   const stageLabel = {
@@ -557,7 +561,8 @@ function IncidentPanel({incident, agentGen, onAccept, onOverride, onEscalate}) {
   };
   return <Panel title={incident?`Incident — ${incident.node}`:"Incident"}
     sub={stage?stageLabel[stage]:"Watcher quiet — no anomaly on focused node"}
-    right={incident && <Btn color={T.crit} onClick={()=>onEscalate(incident)} style={{padding:"3px 9px"}}>⚑ Escalate</Btn>}>
+    right={incident && <Btn color={T.crit} onClick={()=>onEscalate(incident)} style={{padding:"3px 9px"}}>⚑ Escalate</Btn>}
+    style={style} fillHeight={fillHeight}>
     {!incident && <div style={{fontSize:11.5,color:T.faint,fontFamily:MONO}}>
       Faults fire at t010 (R2-N5 fan) and t022 (R3-N2 mem).<br/>
       Gen-0 misdiagnoses fan as CPU overload.<br/>Gen-4 gets it right via KG correction.
@@ -606,13 +611,13 @@ function IncidentPanel({incident, agentGen, onAccept, onOverride, onEscalate}) {
 }
 
 /* ── BLAST RADIUS + RUNBOOK ──────────────────────────────────────────── */
-function BlastRunbook({incident}) {
-  if(!incident) return <Panel title="Blast radius & runbook" sub="focus an incident to see impact + playbook">
+function BlastRunbook({incident, style, fillHeight}) {
+  if(!incident) return <Panel title="Blast radius & runbook" sub="focus an incident to see impact + playbook" style={style} fillHeight={fillHeight}>
     <div style={{fontFamily:MONO,fontSize:11,color:T.faint}}>No incident focused.</div>
   </Panel>;
   const b = blastRadius(incident.node);
   const rb = RUNBOOKS[incident.faultType] || RUNBOOKS.default;
-  return <Panel title="Blast radius & runbook" sub={`impact of ${incident.node} · tenant ${b.tenant}`}>
+  return <Panel title="Blast radius & runbook" sub={`impact of ${incident.node} · tenant ${b.tenant}`} style={style} fillHeight={fillHeight}>
     <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.8,marginBottom:8}}>
       <div><span style={{color:T.faint}}>primary job </span><span style={{color:T.crit}}>{b.primary}</span></div>
       <div><span style={{color:T.faint}}>co-scheduled </span><span style={{color:T.warn}}>{b.shards.join(" · ")}</span></div>
@@ -629,12 +634,12 @@ function BlastRunbook({incident}) {
 }
 
 /* ── EVENT LOG ───────────────────────────────────────────────────────── */
-function EventLog({log, focusNode}) {
+function EventLog({log, focusNode, style, fillHeight}) {
   const col = {sys:T.muted, watch:T.warn, agent:T.agent, op:T.kg};
   const lbl = {sys:"SYS  ", watch:"WATCH", agent:"AGENT", op:"SRE  "};
   const shown = focusNode ? log.filter(e=>!e.node || e.node===focusNode) : log;
-  return <Panel title="Event log" sub={focusNode?`filtered → ${focusNode} · watcher · agent · SRE`:"watcher · task agent · SRE operator"} style={{flex:1}}>
-    <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.7,maxHeight:220,overflowY:"auto"}}>
+  return <Panel title="Event log" sub={focusNode?`filtered → ${focusNode} · watcher · agent · SRE`:"watcher · task agent · SRE operator"} style={style} fillHeight={fillHeight}>
+    <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.7}}>
       {shown.map((e,i) => <div key={i} style={{color:col[e.kind]||T.muted,display:"flex",gap:6}}>
         <span style={{color:T.faint,minWidth:30}}>t{String(e.t).padStart(3,"0")}</span>
         <span style={{color:T.faint,minWidth:44}}>[{lbl[e.kind]||"SYS  "}]</span>
@@ -704,25 +709,32 @@ function SREChat({messages, onSend, focusNode}) {
 function ObservabilityTab(p) {
   const focusIncident = p.incidents.find(i=>i.node===p.focusNode && i.stage!=="resolved")
                      || p.incidents.find(i=>i.node===p.focusNode);
-  return <div style={{display:"flex",flexDirection:"column",gap:12}}>
+  /* Fixed viewport height: 100vh minus navbar(~42) + tabbar(~56) + margins(~48) + footer(~28) + padding(28) = 202px */
+  return <div style={{display:"flex",flexDirection:"column",gap:12,
+    height:"calc(100vh - 202px)",overflow:"hidden"}}>
     <FleetHealthStrip nodes={p.nodes} incidents={p.incidents} repairs={p.repairs} mttr={p.mttr}/>
     <FocusSwitcher incidents={p.incidents} focusNode={p.focusNode} onFocus={p.onSelect}/>
-    <div style={{display:"grid",gridTemplateColumns:"290px 1fr 350px",gap:12,alignItems:"start"}}>
-      {/* Left: rack + repair queue */}
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+    {/* Grid takes all remaining space */}
+    <div style={{display:"grid",gridTemplateColumns:"290px 1fr 350px",gap:12,
+      flex:1,minHeight:0,overflow:"hidden"}}>
+      {/* Left: rack (fixed) + repair queue (fills) */}
+      <div style={{display:"flex",flexDirection:"column",gap:12,minHeight:0,overflow:"hidden"}}>
         <RackGrid nodes={p.nodes} selected={p.focusNode} repairs={p.repairs} onSelect={p.onSelect}/>
-        <RepairQueue repairs={p.repairs} onCancel={p.onCancelRepair}/>
+        <RepairQueue repairs={p.repairs} onCancel={p.onCancelRepair}
+          style={{flex:1,minHeight:0}} fillHeight/>
       </div>
-      {/* Center: telemetry + blast radius */}
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+      {/* Center: telemetry (fixed) + blast radius (fills) */}
+      <div style={{display:"flex",flexDirection:"column",gap:12,minHeight:0,overflow:"hidden"}}>
         <Telemetry history={p.history} nodes={p.nodes} selected={p.focusNode}/>
-        <BlastRunbook incident={focusIncident}/>
+        <BlastRunbook incident={focusIncident} style={{flex:1,minHeight:0}} fillHeight/>
       </div>
-      {/* Right: incident + event log */}
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+      {/* Right: incident (fills) + event log (fills) */}
+      <div style={{display:"flex",flexDirection:"column",gap:12,minHeight:0,overflow:"hidden"}}>
         <IncidentPanel incident={focusIncident} agentGen={p.agentGen}
-          onAccept={p.onAccept} onOverride={p.onOverride} onEscalate={p.onEscalate}/>
-        <EventLog log={p.log} focusNode={p.focusNode}/>
+          onAccept={p.onAccept} onOverride={p.onOverride} onEscalate={p.onEscalate}
+          style={{flex:1,minHeight:0}} fillHeight/>
+        <EventLog log={p.log} focusNode={p.focusNode}
+          style={{flex:1,minHeight:0}} fillHeight/>
       </div>
     </div>
   </div>;
@@ -1010,34 +1022,6 @@ function LearningTab({metrics, metaResult, onRunMeta, metaLoading}) {
 
     {/* Variant archive */}
     <ArchivePanel/>
-
-    {/* Training data future scope */}
-    <Panel title="Training Data — Future Scope" dashed
-      sub="architecture ready · preference pairs accumulate every episode · two steps to full RL">
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
-        <div style={{borderLeft:`3px solid ${T.ok}`,paddingLeft:12}}>
-          <div style={{fontFamily:MONO,fontSize:9,color:T.ok,letterSpacing:2,marginBottom:4}}>WHAT WE HAVE NOW</div>
-          <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>Closed loop (no model finetuning)</div>
-          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:1.7}}>
-            KG memory + meta-agent evolution, both evaluated on held-out scenarios. Composite score: <span style={{color:T.ok}}>0.64</span>.
-          </div>
-        </div>
-        <div style={{borderLeft:`3px solid ${T.kg}`,paddingLeft:12}}>
-          <div style={{fontFamily:MONO,fontSize:9,color:T.kg,letterSpacing:2,marginBottom:4}}>NEXT: DPO FINETUNING</div>
-          <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>Finetune on preference pairs</div>
-          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:1.7}}>
-            Every SRE override exports a (rejected, chosen) pair. DPO on a 3–8B LoRA model. Gate on held-out regression before deploy.
-          </div>
-        </div>
-        <div style={{borderLeft:`3px solid ${T.agent}`,paddingLeft:12}}>
-          <div style={{fontFamily:MONO,fontSize:9,color:T.agent,letterSpacing:2,marginBottom:4}}>AFTER DPO: GRPO</div>
-          <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>RL against simulator reward</div>
-          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:1.7}}>
-            GRPO with composite as reward signal. The simulator IS the RL environment — nothing new to build. Two days → not enough episodes for stable RL yet.
-          </div>
-        </div>
-      </div>
-    </Panel>
   </div>;
 }
 
@@ -1087,6 +1071,126 @@ function KGStatsPanel({corrections, hitRate}) {
       Hit-rate climbs with each correction — more institutional memory, fewer repeat misdiagnoses.
     </div>
   </Panel>;
+}
+
+/* ── KG: KNOWLEDGE DB INGESTION ──────────────────────────────────────── */
+function KnowledgeDBPanel() {
+  const [url, setUrl]             = useState("");
+  const [status, setStatus]       = useState(null); // {ok, msg}
+  const [ingesting, setIngesting] = useState(false);
+  const [history, setHistory]     = useState([]);
+  const [dragOver, setDragOver]   = useState(false);
+
+  async function ingest(payload) {
+    if (!BACKEND_HTTP) {
+      setStatus({ok:false, msg:"Backend not connected — set VITE_BACKEND_HTTP in .env and start python backend/main.py"});
+      return;
+    }
+    setIngesting(true); setStatus(null);
+    try {
+      const resp = await fetch(`${BACKEND_HTTP}/api/kg/ingest`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setStatus({ok:true, msg:`+${data.added} nodes · +${data.edges} edges — ${data.summary||"extraction complete"}`});
+        setHistory(h=>[{source:payload.url||payload.filename||"text input", added:data.added, edges:data.edges}, ...h]);
+      } else {
+        setStatus({ok:false, msg:data.detail||"Ingestion failed"});
+      }
+    } catch(e) {
+      setStatus({ok:false, msg:e.message});
+    } finally {
+      setIngesting(false);
+    }
+  }
+
+  function handleFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = evt => ingest({filename:file.name, text:evt.target.result.slice(0,12000)});
+    reader.readAsText(file);
+  }
+
+  function openFilePicker() {
+    const inp = document.createElement("input");
+    inp.type="file"; inp.accept=".txt,.md,.log,.pdf,.json,.csv";
+    inp.onchange = evt => handleFile(evt.target.files[0]);
+    inp.click();
+  }
+
+  return (
+    <Panel title="Knowledge DB — Document Ingestion"
+      sub="feed runbooks, postmortems, or failure logs · Gemini extracts failure patterns and evolves the KG">
+      {/* URL input */}
+      <div style={{display:"flex",gap:8,marginBottom:10}}>
+        <input value={url} onChange={e=>setUrl(e.target.value)}
+          onKeyDown={e=>{ if(e.key==="Enter"&&url.trim()&&!ingesting){ingest({url:url.trim()});setUrl("");} }}
+          placeholder="Paste document URL (runbook, postmortem, wiki page)…"
+          style={{flex:1,background:T.bg,border:`1px solid ${T.line}`,borderRadius:6,
+            color:T.text,fontFamily:MONO,fontSize:11,padding:"7px 9px",outline:"none"}}/>
+        <Btn color={T.kg}
+          onClick={()=>{if(url.trim()){ingest({url:url.trim()});setUrl("");}}}
+          disabled={!url.trim()||ingesting}>
+          {ingesting?"Parsing…":"Ingest URL"}
+        </Btn>
+      </div>
+
+      {/* Drop zone */}
+      <div
+        onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+        onDragLeave={()=>setDragOver(false)}
+        onDrop={e=>{e.preventDefault();setDragOver(false);handleFile(e.dataTransfer.files[0]);}}
+        onClick={openFilePicker}
+        style={{
+          border:`2px dashed ${dragOver?T.kg:T.line}`, borderRadius:8,
+          padding:"16px 12px", textAlign:"center", cursor:"pointer",
+          fontFamily:MONO, fontSize:11, color:dragOver?T.kg:T.muted,
+          background:dragOver?T.kg+"0D":"transparent",
+          transition:"all 0.15s", marginBottom:10,
+        }}>
+        ↓ drop file · or click to browse
+        <div style={{fontSize:9.5,color:T.faint,marginTop:3}}>
+          .txt · .md · .log · .json — Gemini extracts symptoms → causes → actions
+        </div>
+      </div>
+
+      {/* Status */}
+      {status && (
+        <div style={{fontFamily:MONO,fontSize:11,padding:"7px 10px",borderRadius:6,marginBottom:8,
+          background:status.ok?T.ok+"1A":T.crit+"1A",
+          border:`1px solid ${status.ok?T.ok+"44":T.crit+"44"}`,
+          color:status.ok?T.ok:T.crit}}>
+          {status.ok?"✓ ":"✗ "}{status.msg}
+        </div>
+      )}
+
+      {/* Ingestion log */}
+      {history.length>0 && (
+        <div style={{fontFamily:MONO,fontSize:10}}>
+          <div style={{color:T.faint,letterSpacing:1,marginBottom:4}}>INGESTION LOG</div>
+          {history.map((h,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:8,
+              padding:"4px 0",borderTop:`1px solid ${T.line}`}}>
+              <span style={{color:T.kg}}>+{h.added} nodes</span>
+              <span style={{color:T.faint}}>+{h.edges} edges</span>
+              <span style={{color:T.muted,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                {h.source}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!BACKEND_HTTP && (
+        <div style={{fontFamily:MONO,fontSize:10,color:T.faint,
+          borderTop:`1px solid ${T.line}`,paddingTop:8,marginTop:6}}>
+          ℹ Backend required — set VITE_BACKEND_HTTP in .env and start <code>python backend/main.py</code>
+        </div>
+      )}
+    </Panel>
+  );
 }
 
 /* ── KNOWLEDGE GRAPH TAB ─────────────────────────────────────────────── */
@@ -1166,6 +1270,7 @@ function KnowledgeGraphTab({corrections, retrievalHits, focusNode, hitRate}) {
           No catastrophic forgetting. Every correction is auditable, inspectable, reversible. A bad lesson can be deleted — not untrained. This is what makes ops automation safe to trust.
         </div>
       </Panel>
+      <KnowledgeDBPanel/>
     </div>
   </div>;
 }
@@ -1211,10 +1316,33 @@ function DataSourcesPanel() {
 }
 
 /* ── TRAINING DATA TAB ───────────────────────────────────────────────── */
+function exportPairsJSONL(pairs, priorCount) {
+  const allPairs = [
+    // Prior synthetic pairs
+    ...Array.from({length:priorCount},(_, i)=>({
+      id:i+1, context:`sig: sim-fault @ R${(i%4)+1}-N${(i%8)+1} t${String(i*3+10).padStart(3,"0")}`,
+      rejected:["throttle_job","migrate_workload","restart_node"][i%3],
+      chosen:["ramp_fans","drain_node","escalate","ramp_fans"][i%4],
+      source:"simulator_episode",
+    })),
+    // Live session pairs
+    ...pairs.map(p=>({id:priorCount+p.id, context:p.ctx, rejected:p.rejected, chosen:p.chosen, source:"operator_override"})),
+  ];
+  const blob = new Blob([allPairs.map(p=>JSON.stringify(p)).join("\n")], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href=url; a.download="infrabrain_preference_pairs.jsonl"; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function TrainingDataTab({pairs, priorCount=237}) {
-  // Future scope banner
   const PRIOR=priorCount, total=PRIOR+pairs.length;
-  const SCHEMA=`{\n  "id":       1,\n  "context":  "sig: temp↑/fan↓ @ R2-N5 t042",\n  "rejected": "throttle_job",\n  "chosen":   "ramp_fans",\n  "source":   "operator_override"\n}`;
+  // Show live pair as schema example, fall back to static example
+  const lastPair = pairs.length > 0 ? pairs[pairs.length-1] : null;
+  const SCHEMA = lastPair
+    ? JSON.stringify({id:PRIOR+lastPair.id, context:lastPair.ctx, rejected:lastPair.rejected, chosen:lastPair.chosen, source:"operator_override"}, null, 2)
+    : `{\n  "id":       1,\n  "context":  "sig: temp↑/fan↓ @ R2-N5 t042",\n  "rejected": "throttle_job",\n  "chosen":   "ramp_fans",\n  "source":   "operator_override"\n}`;
+
   return <div style={{display:"flex",flexDirection:"column",gap:12}}>
     {/* Future scope banner */}
     <div style={{background:T.agent+"11",border:`1px solid ${T.agent}44`,borderRadius:8,
@@ -1225,7 +1353,7 @@ function TrainingDataTab({pairs, priorCount=237}) {
           FUTURE SCOPE — Training Data Pipeline
         </div>
         <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted}}>
-          Architecture is ready · preference pairs accumulate every episode · two steps from full RL.
+          Architecture ready · preference pairs accumulate every episode · two steps from full RL.
           Current system uses KG memory + meta-agent code evolution — no model finetuning required yet.
         </div>
       </div>
@@ -1245,10 +1373,19 @@ function TrainingDataTab({pairs, priorCount=237}) {
           </div>)}
         </div>
       </Panel>
-      <Panel title="Pair schema — JSONL export format">
+      <Panel title="Pair schema — JSONL export format"
+        sub={lastPair ? "showing most recent live pair" : "static example — override an incident to generate real pairs"}>
         <pre style={{fontFamily:MONO,fontSize:11,lineHeight:1.7,background:"#0A0D11",
-          border:`1px solid ${T.line}`,borderRadius:6,padding:10,color:T.muted}}>{SCHEMA}</pre>
-        <div style={{marginTop:8}}><Btn disabled color={T.faint}>Export JSONL — future work: DPO / GRPO</Btn></div>
+          border:`1px solid ${lastPair?T.kg:T.line}`,borderRadius:6,padding:10,
+          color:lastPair?T.kg:T.muted,margin:0}}>{SCHEMA}</pre>
+        <div style={{marginTop:10,display:"flex",gap:8,alignItems:"center"}}>
+          <Btn color={T.kg} onClick={()=>exportPairsJSONL(pairs,PRIOR)}>
+            ↓ Export {total} pairs as JSONL
+          </Btn>
+          <span style={{fontFamily:MONO,fontSize:10,color:T.faint}}>
+            ready for DPO / GRPO training
+          </span>
+        </div>
       </Panel>
     </div>
     <DataCompositionPanel pairs={pairs}/>

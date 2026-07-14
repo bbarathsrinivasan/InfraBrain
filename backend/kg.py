@@ -50,6 +50,22 @@ def init_db():
             mttr        REAL,
             created_at  REAL
         );
+        CREATE TABLE IF NOT EXISTS kg_doc_nodes (
+            id          TEXT PRIMARY KEY,
+            label       TEXT NOT NULL,
+            kind        TEXT NOT NULL,
+            description TEXT,
+            source      TEXT,
+            created_at  REAL
+        );
+        CREATE TABLE IF NOT EXISTS kg_doc_edges (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_id     TEXT NOT NULL,
+            to_id       TEXT NOT NULL,
+            label       TEXT,
+            source      TEXT,
+            created_at  REAL
+        );
     """)
     conn.commit()
     conn.close()
@@ -138,6 +154,46 @@ def get_pairs() -> List[dict]:
     ).fetchall()
     conn.close()
     return [{"id": r[0], "ctx": r[1], "rejected": r[2], "chosen": r[3], "source": r[4]} for r in rows]
+
+
+# ── Document-ingested KG nodes/edges ──────────────────────────────────────
+
+def add_doc_node(node: dict):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT OR REPLACE INTO kg_doc_nodes(id,label,kind,description,source,created_at) "
+        "VALUES(?,?,?,?,?,?)",
+        (node["id"], node["label"], node.get("kind","symptom"),
+         node.get("description",""), node.get("source",""), time.time())
+    )
+    conn.commit(); conn.close()
+
+
+def add_doc_edge(edge: dict, source: str = ""):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO kg_doc_edges(from_id,to_id,label,source,created_at) VALUES(?,?,?,?,?)",
+        (edge["from_id"], edge["to_id"], edge.get("label",""), source, time.time())
+    )
+    conn.commit(); conn.close()
+
+
+def get_doc_nodes() -> List[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT id,label,kind,description,source FROM kg_doc_nodes ORDER BY created_at"
+    ).fetchall()
+    conn.close()
+    return [{"id":r[0],"label":r[1],"kind":r[2],"description":r[3],"source":r[4]} for r in rows]
+
+
+def get_doc_edges() -> List[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT id,from_id,to_id,label,source FROM kg_doc_edges ORDER BY id"
+    ).fetchall()
+    conn.close()
+    return [{"id":r[0],"from_id":r[1],"to_id":r[2],"label":r[3],"source":r[4]} for r in rows]
 
 
 # ── Episode traces ─────────────────────────────────────────────────────────

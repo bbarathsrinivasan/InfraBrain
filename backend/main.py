@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -563,6 +563,110 @@ async def get_metrics():
     metrics     = compute_metrics(traces, corrections, sim.agentGen, sim.episodes)
     metrics["pairsCount"] = len(kgdb.get_pairs())
     return metrics
+
+
+# ── REST: KG document ingestion ─────────────────────────────────────────
+
+class IngestRequest(BaseModel):
+    url:      Optional[str] = None
+    text:     Optional[str] = None
+    filename: Optional[str] = None
+
+
+@app.post("/api/kg/ingest")
+async def kg_ingest(req: IngestRequest):
+    """
+    Feed a document (URL or raw text) to Gemini; it extracts failure patterns
+    (symptoms → causes → actions) and persists them as new KG nodes/edges.
+    """
+    import httpx
+
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key or api_key.endswith("..."):
+        raise HTTPException(status_code=503, detail="GEMINI_API_KEY not configured in backend/.env")
+
+    # ── 1. Resolve text content ───────────────────────────────────────────
+    text = req.text or ""
+    source = req.url or req.filename or "direct-input"
+
+    if req.url and not req.text:
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                r = await client.get(req.url, headers={"User-Agent": "InfraBrain/1.0"})
+                r.raise_for_status()
+                text = r.text
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Could not fetch URL: {exc}")
+
+    if not text.strip():
+        raise HTTPException(status_code=422, detail="No text content to ingest")
+
+    text = text[:10_000]  # Gemini context window budget
+
+    # ── 2. Gemini extraction ──────────────────────────────────────────────
+    from google import genai as gai
+    from google.genai import types as gai_types
+
+    client = gai.Client(api_key=api_key)
+
+    extraction_prompt = f"""You are analyzing a document about GPU datacenter / infrastructure failures.
+Extract failure knowledge for a diagnostic knowledge graph.
+
+Return ONLY valid JSON matching this schema exactly:
+{{
+  "nodes": [
+    {{"id": "snake_case_id", "label": "2-4 word name", "kind": "symptom|cause|action", "description": "one sentence"}}
+  ],
+  "edges": [
+    {{"from_id": "node_id", "to_id": "node_id", "label": "short relationship"}}
+  ],
+  "summary": "1-2 sentence summary of what was extracted"
+}}
+
+Rules:
+- "symptom" = observable signal (e.g. temp spike, util drop, ECC errors)
+- "cause"   = root cause diagnosis (e.g. fan failure, memory leak, NIC fault)
+- "action"  = remediation step (e.g. ramp_fans, drain_node, checkpoint_restart)
+- Extract at most 12 nodes and 18 edges
+- Use snake_case ids (e.g. "thermal_throttle", "fan_failure", "ramp_fans")
+- Do not include generic or non-infrastructure content
+
+Document:
+{text}"""
+
+    try:
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=extraction_prompt,
+            config=gai_types.GenerateContentConfig(
+                response_mime_type="application/json"
+            ),
+        )
+        data = json.loads(resp.text)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Gemini extraction failed: {exc}")
+
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", [])
+    summary = data.get("summary", "")
+
+    # ── 3. Persist to DB ──────────────────────────────────────────────────
+    for node in nodes:
+        node["source"] = source
+        kgdb.add_doc_node(node)
+    for edge in edges:
+        kgdb.add_doc_edge(edge, source=source)
+
+    # Broadcast update to connected clients so the KG tab refreshes
+    await broadcast({"type": "kg_doc_update", "nodes": len(nodes), "edges": len(edges)})
+
+    return {
+        "added":   len(nodes),
+        "edges":   len(edges),
+        "summary": summary,
+        "source":  source,
+        "nodes":   nodes,
+    }
 
 
 # ── REST: meta-agent ────────────────────────────────────────────────────
