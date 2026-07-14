@@ -676,11 +676,13 @@ function SREChat({messages, onSend, focusNode}) {
   const roleColor = {sre:T.kg, agent:T.agent, sys:T.muted};
   const roleLabel = {sre:"SRE",agent:"AGENT",sys:"SYS"};
   return <Panel title="SRE console" sub={`ask the agent · type "/" for actions · focus ${focusNode||"—"}`} style={{flex:1,display:"flex",flexDirection:"column"}}>
-    <div ref={scrollRef} style={{flex:1,minHeight:120,maxHeight:230,overflowY:"auto",
-      fontFamily:MONO,fontSize:11,lineHeight:1.6,marginBottom:8}}>
-      {messages.map((m,i)=><div key={i} style={{marginBottom:6}}>
-        <span style={{color:roleColor[m.role]||T.muted,fontSize:9.5}}>{roleLabel[m.role]||"SYS"} </span>
-        <span style={{color:m.role==="sre"?T.text:roleColor[m.role]||T.muted,whiteSpace:"pre-wrap"}}>{m.text}</span>
+    <div ref={scrollRef} style={{flex:1,minHeight:200,maxHeight:420,overflowY:"auto",
+      fontFamily:MONO,fontSize:11,lineHeight:1.7,marginBottom:8}}>
+      {messages.map((m,i)=><div key={i} style={{marginBottom:7}}>
+        <span style={{color:roleColor[m.role]||T.muted,fontSize:9.5,
+          display:"inline-block",minWidth:42}}>{roleLabel[m.role]||"SYS"}</span>
+        <span style={{color:m.role==="sre"?T.text:roleColor[m.role]||T.muted,
+          whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{m.text}</span>
       </div>)}
     </div>
     <div style={{position:"relative"}}>
@@ -714,25 +716,25 @@ function ObservabilityTab(p) {
     height:"calc(100vh - 202px)",overflow:"hidden"}}>
     <FleetHealthStrip nodes={p.nodes} incidents={p.incidents} repairs={p.repairs} mttr={p.mttr}/>
     <FocusSwitcher incidents={p.incidents} focusNode={p.focusNode} onFocus={p.onSelect}/>
-    {/* Grid takes all remaining space */}
-    <div style={{display:"grid",gridTemplateColumns:"290px 1fr 350px",gap:12,
-      flex:1,minHeight:0,overflow:"hidden"}}>
-      {/* Left: rack (fixed) + repair queue (fills) */}
-      <div style={{display:"flex",flexDirection:"column",gap:12,minHeight:0,overflow:"hidden"}}>
+    {/* Grid takes all remaining space — gridTemplateRows:1fr makes row fill the flex height */}
+    <div style={{display:"grid",gridTemplateColumns:"290px 1fr 350px",
+      gridTemplateRows:"1fr",gap:12,flex:1,minHeight:0,overflow:"hidden"}}>
+      {/* Left: rack (natural height) + repair queue (fills rest) */}
+      <div style={{display:"flex",flexDirection:"column",gap:12,overflow:"hidden"}}>
         <RackGrid nodes={p.nodes} selected={p.focusNode} repairs={p.repairs} onSelect={p.onSelect}/>
         <RepairQueue repairs={p.repairs} onCancel={p.onCancelRepair}
           style={{flex:1,minHeight:0}} fillHeight/>
       </div>
-      {/* Center: telemetry (fixed) + blast radius (fills) */}
-      <div style={{display:"flex",flexDirection:"column",gap:12,minHeight:0,overflow:"hidden"}}>
+      {/* Center: telemetry (natural height) + blast radius (fills rest) */}
+      <div style={{display:"flex",flexDirection:"column",gap:12,overflow:"hidden"}}>
         <Telemetry history={p.history} nodes={p.nodes} selected={p.focusNode}/>
         <BlastRunbook incident={focusIncident} style={{flex:1,minHeight:0}} fillHeight/>
       </div>
-      {/* Right: incident (fills) + event log (fills) */}
-      <div style={{display:"flex",flexDirection:"column",gap:12,minHeight:0,overflow:"hidden"}}>
+      {/* Right: incident (larger share) + event log (fills rest) */}
+      <div style={{display:"flex",flexDirection:"column",gap:12,overflow:"hidden"}}>
         <IncidentPanel incident={focusIncident} agentGen={p.agentGen}
           onAccept={p.onAccept} onOverride={p.onOverride} onEscalate={p.onEscalate}
-          style={{flex:1,minHeight:0}} fillHeight/>
+          style={{flex:"0 0 auto"}} fillHeight={false}/>
         <EventLog log={p.log} focusNode={p.focusNode}
           style={{flex:1,minHeight:0}} fillHeight/>
       </div>
@@ -1263,11 +1265,6 @@ function KnowledgeGraphTab({corrections, retrievalHits, focusNode, hitRate}) {
           <div><span style={{color:T.agent}}>Per incident (sec):</span> KG retrieval — context changes, weights unchanged</div>
           <div><span style={{color:T.kg}}>Per override (min):</span> KG memory — correction written permanently</div>
           <div><span style={{color:T.ok}}>Per generation (off):</span> agent code rewritten by meta agent</div>
-        </div>
-      </Panel>
-      <Panel title="Why non-parametric?">
-        <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:1.9}}>
-          No catastrophic forgetting. Every correction is auditable, inspectable, reversible. A bad lesson can be deleted — not untrained. This is what makes ops automation safe to trust.
         </div>
       </Panel>
       <KnowledgeDBPanel/>
@@ -2052,7 +2049,7 @@ export default function InfraBrainApp() {
 
       {/* SRE Console — floating panel anchored to navbar, zero space when closed */}
       {chatOpen && (
-        <div style={{position:"fixed",top:56,right:14,width:360,zIndex:1000,
+        <div style={{position:"fixed",top:56,right:14,width:420,zIndex:1000,
           borderRadius:10,boxShadow:"0 12px 40px rgba(0,0,0,.65)"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
             background:T.soft,borderRadius:"10px 10px 0 0",
