@@ -20,62 +20,41 @@ A self-improving GPU diagnostic agent that rewrites its own code from operator f
 
 ## Technical Architecture, Methodology & Novelty
 
-### How it works — two agents, three loops
+**Architecture — teacher and student:**
+- Task agent (student) handles every live incident: detects anomaly → queries knowledge graph → calls Gemini 2.0 Flash to diagnose → suggests fix to SRE
+- Meta-agent (teacher) runs offline: reads episode traces → identifies where the student keeps failing → rewrites the student's diagnostic prompt as a code diff → only ships if held-out score improves (eval gate blocks regressions)
+- Three learning loops: KG retrieval augments context in seconds, SRE overrides write corrections in minutes, meta-agent rewrites code offline between generations
 
-InfraBrain is a **two-level agent system** modelled on the teacher-student pattern from the DGM-Hyperagents paper (arXiv 2503.19461).
+**What makes it novel:**
+- Corrections stored in a knowledge graph (SQLite), not model weights — auditable, reversible, no catastrophic forgetting. A bad lesson is one DELETE, not an un-training run
+- Meta-agent with a held-out eval gate — improvements transfer to fault classes neither agent trained on (validated by DGM-Hyperagents paper, arXiv 2503.19461)
+- Every SRE override auto-exports a DPO preference pair — training data pipeline is built into the correction loop from day one
 
-**Task agent (the student)** — runs on every live incident:
-1. A statistical watcher detects anomalies using z-score thresholds on temperature, utilization, fan speed, and memory
-2. The task agent queries live telemetry + searches the knowledge graph for similar past corrections using Jaccard signature similarity
-3. Gemini 2.0 Flash diagnoses the fault and suggests a remediation with confidence score and cited evidence
-4. The SRE accepts or overrides — either way, the outcome is recorded
+**Google AI models used:**
+- Gemini 2.0 Flash — task agent diagnosis, meta-agent code evolution, SRE console chat (streaming), and document ingestion into knowledge graph
+- Google GenAI Python SDK (google-genai ≥ 1.0.0)
 
-**Meta-agent (the teacher)** — runs offline between generations:
-1. Reads all episode traces, clusters failure patterns, identifies where the task agent keeps going wrong
-2. Calls Gemini 2.0 Flash to propose a rewrite of the task agent's diagnostic prompt as a unified diff
-3. The rewrite only ships if it scores higher on a held-out set of fault scenarios the agent hasn't trained on — an eval gate that blocks regressions
-4. The improved agent becomes the next generation
+**Google infrastructure — production roadmap:**
+- Sherlock → would replace our z-score watcher with Google's production anomaly detection
+- X-Manager / Borg → repair tasks currently simulated; in production these become real Borg job submissions
+- Brogg → would replace SQLite KG with a scalable graph store for fleet-wide correction sharing
 
-**Three learning loops at three timescales:**
-- **Seconds** — KG retrieval augments every diagnosis with relevant past corrections
-- **Minutes** — each SRE override writes a permanent correction to the knowledge graph
-- **Offline** — the meta-agent rewrites the task agent's code each generation
+**Live functional code vs. simulated:**
 
-### What makes it novel
+✅ Live code:
+- Python thermal fault simulator (dT = 0.085·util − 0.082·fan + noise), 32 nodes, seeded from Alibaba GPU cluster traces
+- Statistical z-score watcher for anomaly detection
+- Gemini 2.0 Flash task agent with KG-augmented prompt and structured JSON output
+- SQLite knowledge graph with Jaccard similarity retrieval, persists across episodes
+- Gemini 2.0 Flash meta-agent that reads traces and proposes prompt diffs
+- SRE console chat with Gemini streaming over SSE
+- FastAPI WebSocket pushing real-time telemetry to the frontend
+- Knowledge DB — Gemini extracts nodes/edges from dropped files or URLs into the KG
 
-- **Non-parametric memory.** Corrections live in SQLite, not model weights. They never get forgotten and never cause catastrophic forgetting. A bad lesson is one `DELETE` row — not an un-training run. This is fundamentally different from fine-tuning.
-- **Meta-agent with an eval gate.** The teacher rewrites the student's code, but only ships the update if held-out performance improves. This is the key result from the Hyperagents paper — improvements generalise to fault classes neither agent trained on.
-- **Deception-aware prompt engineering.** Gen-5's diagnostic prompt includes an explicit `CRITICAL NOTE` about thermal throttling: util drop does not mean CPU overload. This single addition accounts for the largest jump in held-out accuracy.
-- **DPO-ready from day one.** Every SRE override automatically exports a preference pair in the exact format DPO fine-tuning expects. No extra labelling step — the training data pipeline is built into the correction loop.
+🟡 Simulated / pre-computed:
+- Override rate chart history (40-episode mock curve)
+- Composite score and generation curves (pre-computed; reflect real architecture)
+- Agent version history per generation (realistic diffs; not auto-generated at runtime)
 
-### Google AI models and infrastructure used
-
-| Component | Technology |
-|---|---|
-| Task agent LLM | **Gemini 2.0 Flash** via Google GenAI Python SDK |
-| Meta-agent LLM | **Gemini 2.0 Flash** — reads traces, proposes diffs |
-| SRE console chat | **Gemini 2.0 Flash** streaming (SSE) |
-| Document ingestion (Knowledge DB) | **Gemini 2.0 Flash** with `response_mime_type="application/json"` for structured KG extraction |
-| Client SDK | **google-genai ≥ 1.0.0** |
-
-**Google internal tools not yet integrated (production roadmap):**
-- **Sherlock** — would replace our statistical z-score watcher with Google's production anomaly detection signal
-- **X-Manager / Borg** — repair tasks are currently simulated; in production these would be real Borg job submissions via X-Manager
-- **Brogg** — could replace our SQLite KG with a scalable graph store for fleet-wide correction sharing across racks
-
-### What is live functional code vs. simulated
-
-| Component | Status | Detail |
-|---|---|---|
-| Fault simulator | ✅ Live code | Python thermal model: `dT = 0.085·util − 0.082·fan + mem_heat + noise`. Fan decay −3%/tick, mem leak +2.4%/tick. Seeded, deterministic. |
-| Statistical watcher | ✅ Live code | Z-score anomaly detection; flags when temp exceeds threshold |
-| Task agent — Gemini diagnosis | ✅ Live code | Real Gemini 2.0 Flash API call with KG-augmented prompt, structured JSON output |
-| Knowledge graph | ✅ Live code | SQLite-backed corrections, Jaccard similarity retrieval, persists across episodes |
-| Meta-agent | ✅ Live code | Real Gemini API call that reads traces and proposes prompt diffs |
-| SRE console chat | ✅ Live code | Gemini streaming over SSE; system prompt includes live node state + active incident |
-| WebSocket telemetry | ✅ Live code | FastAPI WebSocket pushes tick/incident/repair events in real time |
-| Document ingestion (Knowledge DB) | ✅ Live code | Gemini extracts nodes/edges from dropped files or URLs; persists to SQLite |
-| Override rate chart history | 🟡 Simulated | 40-episode mock curve showing realistic decay with spikes at new fault classes |
-| Composite score / gen curves | 🟡 Simulated | Pre-computed scores reflecting the real architecture; not from live held-out runs |
-| Agent version history | 🟡 Simulated | Realistic diffs and metrics per generation; not auto-generated at demo runtime |
-| DPO training loop | 🔴 Not implemented | Preference pairs export is live; training requires more episodes and a fine-tuning run |
+🔴 Not yet implemented:
+- DPO/GRPO training loop — preference pairs export is live, training run needs more episodes
