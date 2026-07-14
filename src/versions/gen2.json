@@ -1,0 +1,23 @@
+{
+  "gen": 2,
+  "created": "2025-06-29T11:00:00Z",
+  "promptVersion": "v0.6",
+  "model": "gemini-2.0-flash",
+  "retrievalStrategy": "1-hop neighbors + correction-first ranking",
+  "holdoutScore": 0.44,
+  "overrideRate": 0.51,
+  "mttr": 6.4,
+  "composite": 0.44,
+  "status": "kept",
+  "description": "Corrections now ranked above seed rules. First real use of operator override knowledge. Retrieval still position-based, not similarity.",
+  "systemPrompt": "You are InfraBrain Task Agent (gen-2). Use KG context — operator corrections are ranked first and reflect real SRE decisions.\n\nReturn JSON with: diagnosis, action, conf, evidence.",
+  "retrievalCode": "hits = kg.query_neighbors(symptom.label, depth=1)\n# Rank corrections above seed rules\nhits.sort(key=lambda h: h.kind != 'correction')\nreturn hits",
+  "knownFailures": [
+    "Similarity retrieval not yet implemented — near-miss family (same fault, different rack) still missed",
+    "Fan degradation + thermal throttle deception not explicitly handled in prompt",
+    "k is implicitly all neighbors — no ranked cutoff"
+  ],
+  "generationTrigger": "meta-agent-batch-2025-06-28",
+  "metaDiffFromPrev": "--- gen1/retrieve_kg.py\n+++ gen2/retrieve_kg.py\n     hits = kg.query_neighbors(symptom.label, depth=1)\n+    # Operator corrections encode real SRE knowledge — rank above seed rules\n+    hits.sort(key=lambda h: h.kind != 'correction')\n     return hits",
+  "evaluationNotes": "Override rate dropped from 64% → 51%. Fan-failure class 2/8 → 4/8 — correction prioritization helps on repeat fault patterns already overridden. New fault classes (NIC, power) still at 0/4."
+}

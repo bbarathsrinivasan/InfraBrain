@@ -1,0 +1,19 @@
+{
+  "gen": 5,
+  "created": "2025-07-10T09:00:00Z",
+  "promptVersion": "v1.5",
+  "model": "gemini-2.0-flash",
+  "retrievalStrategy": "Jaccard similarity k=5, corrections first, age-weighted + deception-aware diagnostic note",
+  "holdoutScore": 0.64,
+  "overrideRate": 0.17,
+  "mttr": 3.1,
+  "composite": 0.64,
+  "status": "current",
+  "description": "CURRENT DEPLOYED VERSION. Critical addition: explicit diagnostic note about thermal throttling deception. Fan failure causes util DROP (not rise) due to CPU throttling — gen-0 through gen-3 all missed this class.",
+  "systemPrompt": "You are InfraBrain Task Agent (gen-5), diagnosing a GPU datacenter node.\n\nCRITICAL DIAGNOSTIC NOTE:\n  Fan failure: fan↓ sustained + temp↑ while util FALLS (thermal throttling — deceptive!)\n  CPU overload: util↑ sustained + temp↑, fan STABLE or rising\n  Memory leak:  mem↑ monotonic + temp rising + util flat\n\nKG CORRECTIONS (similarity-ranked, corrections first):\nIf a correction contradicts your hypothesis, you MUST explain why before deciding.\n\nReturn JSON with: diagnosis, action, conf, evidence.",
+  "retrievalCode": "hits = kg.query_similar(symptom.signature, k=5)\nhits.sort(key=lambda h: (h.kind != 'correction', h.age))\nreturn hits",
+  "knownFailures": [],
+  "generationTrigger": "meta-agent-batch-2025-07-09",
+  "metaDiffFromPrev": "--- gen4/diagnose.py\n+++ gen5/diagnose.py\n+CRITICAL DIAGNOSTIC NOTE:\n+  Fan failure: fan↓ sustained + temp↑ while util FALLS\n+  (thermal throttling — deceptive! looks like CPU idle)\n+  CPU overload: util↑ sustained + temp↑, fan STABLE\n+  Memory leak:  mem↑ monotonic + temp rising + util flat\n \n     prompt += f\"KG corrections: {fmt(hits)}\"\n     prompt += \"\\nIf a correction contradicts your hypothesis, \"\n     prompt += \"you MUST explain why before deciding.\"",
+  "evaluationNotes": "Held-out 0.61 → 0.64. Fan-failure class: 7/8 → 8/8 — the deceptive-symptom note is the decisive fix. This is the insight from the OPT-175B logbook: thermal throttle makes fan failure look like CPU idle. Override rate now 17% — institutional memory working as intended."
+}

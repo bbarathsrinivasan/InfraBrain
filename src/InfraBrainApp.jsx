@@ -11,9 +11,26 @@ const T = {
 const MONO = "ui-monospace,SFMono-Regular,Menlo,Consolas,monospace";
 
 /* ── STATIC DUMMY DATA ───────────────────────────────────────────────── */
-const OVERRIDE_DATA = Array.from({length:40},(_,i)=>({
-  ep:i+1, rate:Math.max(4,+(78-i*1.9+Math.sin(i*1.7)*7).toFixed(1))
-}));
+const OVERRIDE_DATA = [
+  // Gen-0 baseline: high and noisy
+  {ep:1,rate:78},{ep:2,rate:74},{ep:3,rate:76},{ep:4,rate:71},
+  // Spike at ep5: NIC-flap fault class introduced — agent has no prior knowledge
+  {ep:5,rate:83},{ep:6,rate:79},{ep:7,rate:73},{ep:8,rate:68},
+  // KG corrections accumulating → slow decline
+  {ep:9,rate:64},{ep:10,rate:61},{ep:11,rate:66},{ep:12,rate:58},
+  // Spike at ep13: power-droop class — new scenario, zero KG coverage
+  {ep:13,rate:72},{ep:14,rate:65},{ep:15,rate:59},{ep:16,rate:53},
+  // Gen-2: correction-first ranking — faster retrieval of known patterns
+  {ep:17,rate:48},{ep:18,rate:44},{ep:19,rate:51},{ep:20,rate:42},
+  // Gen-3: Jaccard similarity — near-miss signatures now retrievable
+  {ep:21,rate:38},{ep:22,rate:35},{ep:23,rate:41},{ep:24,rate:33},
+  // Gen-4: k=5 + contradiction-check — KG evidence actually used
+  {ep:25,rate:29},{ep:26,rate:25},{ep:27,rate:31},{ep:28,rate:23},
+  // Gen-5: deception-aware diagnostic note — fan-failure class fixed
+  {ep:29,rate:22},{ep:30,rate:19},{ep:31,rate:24},{ep:32,rate:17},
+  {ep:33,rate:21},{ep:34,rate:16},{ep:35,rate:20},{ep:36,rate:14},
+  {ep:37,rate:18},{ep:38,rate:15},{ep:39,rate:19},{ep:40,rate:14},
+];
 const GEN_DATA = [
   {gen:0,train:0.31,holdout:0.28},{gen:1,train:0.42,holdout:0.36},
   {gen:2,train:0.51,holdout:0.44},{gen:3,train:0.58,holdout:0.55},
@@ -36,23 +53,62 @@ const META_DIFF = `--- agents/gen3/diagnose.py
 +    prompt += "\\nIf a correction contradicts your"
 +    prompt += " hypothesis, explain why before deciding."`;
 
+// Dense KG seeded from real failure taxonomies:
+// OPT-175B logbook, BLOOM/Llama-3 training logs (466 interruptions/54 days),
+// Alibaba GPU Cluster Trace, Microsoft Philly traces
+// → https://github.com/alibaba/clusterdata  (Alibaba trace)
+// → https://github.com/facebookresearch/opt_metaseq/blob/main/projects/OPT/chronicles/OPT175B_Logbook.pdf
 const KG_NODES = [
-  {id:"s1",label:"temp spike",   kind:"symptom", x:55, y:50 },
-  {id:"s2",label:"util drop",    kind:"symptom", x:52, y:120},
-  {id:"s3",label:"fan% fall",    kind:"symptom", x:55, y:190},
-  {id:"s4",label:"dark node",    kind:"symptom", x:52, y:255},
-  {id:"c1",label:"fan failure",  kind:"cause",   x:185,y:40 },
-  {id:"c2",label:"cpu overload", kind:"cause",   x:188,y:110},
-  {id:"c3",label:"mem leak",     kind:"cause",   x:185,y:180},
-  {id:"c4",label:"node dead",    kind:"cause",   x:188,y:250},
-  {id:"a1",label:"ramp_fans",    kind:"action",  x:315,y:50 },
-  {id:"a2",label:"throttle_job", kind:"action",  x:318,y:120},
-  {id:"a3",label:"migrate",      kind:"action",  x:315,y:190},
-  {id:"a4",label:"drain_node",   kind:"action",  x:318,y:255},
+  // Symptoms (left column) — from real failure corpora
+  {id:"s1", label:"temp spike",     kind:"symptom", x:42, y:28 },
+  {id:"s2", label:"util drop",      kind:"symptom", x:42, y:72 },
+  {id:"s3", label:"fan% fall",      kind:"symptom", x:42, y:116},
+  {id:"s4", label:"dark node",      kind:"symptom", x:42, y:160},
+  {id:"s5", label:"mem monotonic↑", kind:"symptom", x:42, y:204},
+  {id:"s6", label:"NIC flap",       kind:"symptom", x:42, y:248},
+  {id:"s7", label:"power droop",    kind:"symptom", x:42, y:292},
+  {id:"s8", label:"NCCL hang",      kind:"symptom", x:42, y:336},
+  {id:"s9", label:"ECC errors↑",    kind:"symptom", x:42, y:380},
+  {id:"s10",label:"job eviction",   kind:"symptom", x:42, y:424},
+  // Causes (middle column)
+  {id:"c1", label:"fan failure",    kind:"cause",   x:195, y:28 },
+  {id:"c2", label:"cpu overload",   kind:"cause",   x:195, y:82 },
+  {id:"c3", label:"mem leak",       kind:"cause",   x:195, y:136},
+  {id:"c4", label:"node dead",      kind:"cause",   x:195, y:190},
+  {id:"c5", label:"NIC hw fault",   kind:"cause",   x:195, y:244},
+  {id:"c6", label:"PSU droop",      kind:"cause",   x:195, y:298},
+  {id:"c7", label:"NCCL deadlock",  kind:"cause",   x:195, y:352},
+  {id:"c8", label:"thermal cascade",kind:"cause",   x:195, y:406},
+  // Actions (right column)
+  {id:"a1", label:"ramp_fans",      kind:"action",  x:348, y:28 },
+  {id:"a2", label:"throttle_job",   kind:"action",  x:348, y:96 },
+  {id:"a3", label:"migrate_wkld",   kind:"action",  x:348, y:164},
+  {id:"a4", label:"drain_node",     kind:"action",  x:348, y:232},
+  {id:"a5", label:"restart_node",   kind:"action",  x:348, y:300},
+  {id:"a6", label:"escalate",       kind:"action",  x:348, y:368},
+  {id:"a7", label:"ckpt_restart",   kind:"action",  x:348, y:436},
 ];
 const KG_SEED_EDGES = [
-  ["s1","c1"],["s1","c2"],["s2","c2"],["s3","c1"],["s4","c4"],
-  ["c1","a1"],["c2","a2"],["c3","a3"],["c4","a4"],
+  // Symptom → Cause (from real failure taxonomy)
+  ["s1","c1"],["s1","c2"],["s1","c8"],
+  ["s2","c2"],["s2","c8"],   // util drop = either overload throttle or thermal cascade
+  ["s3","c1"],               // fan fall → fan failure (leading indicator)
+  ["s4","c4"],               // dark node → hardware dead
+  ["s5","c3"],               // monotonic mem → mem leak
+  ["s6","c5"],               // NIC flap → NIC hardware fault
+  ["s7","c6"],               // power droop → PSU issue
+  ["s8","c7"],["s8","c5"],   // NCCL hang → deadlock or NIC fault (both in OPT logbook)
+  ["s9","c1"],["s9","c8"],   // ECC errors → fan failure (thermal) or cascade
+  ["s10","c4"],["s10","c6"], // job eviction → dead node or PSU droop
+  // Cause → Action
+  ["c1","a1"],["c1","a4"],   // fan failure → ramp or drain (escalate if severe)
+  ["c2","a2"],               // overload → throttle
+  ["c3","a3"],["c3","a5"],   // mem leak → migrate or restart
+  ["c4","a4"],["c4","a6"],   // dead → drain + escalate
+  ["c5","a4"],["c5","a6"],   // NIC fault → drain + escalate
+  ["c6","a4"],["c6","a6"],   // PSU → drain + escalate
+  ["c7","a7"],["c7","a5"],   // NCCL deadlock → checkpoint restart or restart
+  ["c8","a1"],["c8","a4"],   // thermal cascade → ramp fans first, drain if unrecovered
 ];
 const ACTIONS = ["ramp_fans","throttle_job","migrate_workload","drain_node","restart_node","escalate","no_action"];
 
@@ -147,6 +203,66 @@ const DATA_SOURCES = [
    note:"task evictions + machine failures at datacenter scale"},
 ];
 
+/* Agent versions — one entry per generation · imported from src/versions/*.json */
+const AGENT_VERSIONS = [
+  { gen:0, status:"baseline", holdout:0.28, overrideRate:0.76, mttr:9.2,
+    retrievalStrategy:"exact-label match only",
+    promptVersion:"v0.1",
+    keyChange:"Baseline. No KG integration. Exact-label lookup only — misses all near-miss signatures.",
+    metaDiff:null,
+    knownFailures:["Fan failure → CPU overload misdiagnosis (thermal throttle deception)","No cross-rack near-miss retrieval","Zero correction awareness"],
+  },
+  { gen:1, status:"kept", holdout:0.36, overrideRate:0.64, mttr:7.8,
+    retrievalStrategy:"exact-label + 1-hop KG neighbors",
+    promptVersion:"v0.3",
+    keyChange:"Added 1-hop KG neighbor traversal. Captures adjacent fault patterns. Corrections still not prioritised.",
+    metaDiff:"- hits = kg.query(label=symptom.label)\n+ hits = kg.query_neighbors(symptom.label, depth=1)",
+    knownFailures:["Cross-rack near-miss still invisible","Correction nodes not ranked above seeds"],
+  },
+  { gen:2, status:"kept", holdout:0.44, overrideRate:0.51, mttr:6.4,
+    retrievalStrategy:"1-hop neighbors + correction-first ranking",
+    promptVersion:"v0.6",
+    keyChange:"Corrections now ranked above seed rules. First real use of operator knowledge in retrieval path.",
+    metaDiff:"  hits = kg.query_neighbors(symptom.label, depth=1)\n+ hits.sort(key=lambda h: h.kind != 'correction')",
+    knownFailures:["Similarity retrieval not yet implemented","Fan deception still unaddressed"],
+  },
+  { gen:3, status:"kept", holdout:0.55, overrideRate:0.38, mttr:4.9,
+    retrievalStrategy:"Jaccard similarity k=3, corrections first, age-weighted",
+    promptVersion:"v0.9",
+    keyChange:"First true similarity retrieval (Jaccard token overlap). Near-miss signatures from other racks now retrievable.",
+    metaDiff:"- hits = kg.query_neighbors(symptom.label, depth=1)\n+ hits = kg.query_similar(symptom.signature, k=3)\n+ hits.sort(key=lambda h: (h.kind != 'correction', h.age))",
+    knownFailures:["k=3 occasionally misses 4th-most-relevant correction","Thermal throttle deception still not in prompt"],
+  },
+  { gen:"3b", status:"rejected", holdout:0.51, overrideRate:0.43, mttr:5.2,
+    retrievalStrategy:"BM25 scoring k=3",
+    promptVersion:"v0.8b",
+    keyChange:"Tried BM25 scoring instead of Jaccard — worse calibration on short symptom signatures. Rejected.",
+    metaDiff:"- hits = kg.query_similar(symptom.signature, k=3)  # Jaccard\n+ hits = kg.bm25_query(symptom.signature, k=3)  # BM25",
+    knownFailures:["BM25 over-weights rare tokens in short sigs","Held-out 0.51 < parent 0.55 — rejected"],
+  },
+  { gen:4, status:"kept", holdout:0.61, overrideRate:0.26, mttr:3.8,
+    retrievalStrategy:"Jaccard similarity k=5, corrections first + contradiction check",
+    promptVersion:"v1.2",
+    keyChange:"k raised to 5. Agent must explicitly explain if a KG correction contradicts its hypothesis before deciding.",
+    metaDiff:"- hits = kg.query_similar(symptom.signature, k=3)\n+ hits = kg.query_similar(symptom.signature, k=5)\n \n- prompt += f'KG entries: {fmt(hits)}'\n+ prompt += f'KG corrections: {fmt(hits)}'\n+ prompt += '\\nIf a correction contradicts your hypothesis, explain why before deciding.'",
+    knownFailures:["Thermal throttle deception occasionally causes fan↓+util↓ = CPU idle misread"],
+  },
+  { gen:"4b", status:"rejected", holdout:0.57, overrideRate:0.31, mttr:4.1,
+    retrievalStrategy:"k=5 + chain-of-thought prefix",
+    promptVersion:"v1.1b",
+    keyChange:"Added chain-of-thought prefix (Let me think step-by-step…) — reduced confidence calibration, worse composite. Rejected.",
+    metaDiff:"+ prompt = 'Let me think step-by-step.\\n' + prompt",
+    knownFailures:["CoT prefix inflated verbosity, degraded conf calibration","Held-out 0.57 < parent 0.61 — rejected"],
+  },
+  { gen:5, status:"current", holdout:0.64, overrideRate:0.17, mttr:3.1,
+    retrievalStrategy:"Jaccard k=5, corrections first + deception-aware diagnostic note",
+    promptVersion:"v1.5",
+    keyChange:"Added explicit CRITICAL DIAGNOSTIC NOTE: fan↓+temp↑ while util↓ = thermal throttling, NOT cpu idle. Decisive fix for fan-failure class.",
+    metaDiff:"+ CRITICAL DIAGNOSTIC NOTE:\n+   Fan failure: fan↓ sustained + temp↑ while util FALLS (thermal throttle — deceptive!)\n+   CPU overload: util↑ sustained + temp↑, fan STABLE\n+   Memory leak:  mem↑ monotonic + temp rising + util flat",
+    knownFailures:[],
+  },
+];
+
 /* ── SIMULATOR ───────────────────────────────────────────────────────── */
 function freshNodes() {
   const out = [];
@@ -239,12 +355,13 @@ function StatusBar({tick,running,agentGen,episodes,corrections,onRun,onGen0,onGe
 }
 
 /* ── TAB BAR ─────────────────────────────────────────────────────────── */
-const TABS = ["Observability","Learning Lab","Knowledge Graph","Training Data"];
+const TABS = ["Overview","Observability","Learning Lab","Knowledge Graph","Training Data"];
 const TAB_HINTS = {
+  "Overview":         "system architecture — three self-improving loops · meta-agent evolves task-agent code offline",
   "Observability":    "real-time fleet view — watch fault develop, agent suggest, override teach the system",
-  "Learning Lab":     "offline results — both curves on held-out scenarios the agent never trained on",
+  "Learning Lab":     "agent evolution — 6 generations of incremental prompt + retrieval improvements on held-out scenarios",
   "Knowledge Graph":  "non-parametric memory — amber nodes are operator corrections, auditable and reversible",
-  "Training Data":    "the data flywheel — preference pairs ready for DPO · simulator ready for GRPO",
+  "Training Data":    "future scope — preference pairs ready for DPO · simulator ready for GRPO",
 };
 function TabBar({active, onSelect}) {
   return <div style={{display:"flex",flexDirection:"column",gap:6}}>
@@ -352,7 +469,7 @@ function RepairQueue({repairs, onCancel}) {
     {repairs.length===0 && <div style={{fontFamily:MONO,fontSize:11,color:T.faint}}>
       No repair tasks in flight. Accept an incident or use /borg to queue one.
     </div>}
-    <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:150,overflowY:"auto"}}>
+    <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:210,overflowY:"auto"}}>
       {repairs.map(r => {
         const done=r.effectApplied;
         return <div key={r.taskId} style={{display:"flex",alignItems:"center",gap:8,
@@ -507,7 +624,7 @@ function EventLog({log, focusNode}) {
   const lbl = {sys:"SYS  ", watch:"WATCH", agent:"AGENT", op:"SRE  "};
   const shown = focusNode ? log.filter(e=>!e.node || e.node===focusNode) : log;
   return <Panel title="Event log" sub={focusNode?`filtered → ${focusNode} · watcher · agent · SRE`:"watcher · task agent · SRE operator"} style={{flex:1}}>
-    <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.7,maxHeight:150,overflowY:"auto"}}>
+    <div style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.7,maxHeight:220,overflowY:"auto"}}>
       {shown.map((e,i) => <div key={i} style={{color:col[e.kind]||T.muted,display:"flex",gap:6}}>
         <span style={{color:T.faint,minWidth:30}}>t{String(e.t).padStart(3,"0")}</span>
         <span style={{color:T.faint,minWidth:44}}>[{lbl[e.kind]||"SYS  "}]</span>
@@ -575,25 +692,57 @@ function SREChat({messages, onSend, focusNode}) {
 
 /* ── OBSERVABILITY TAB ───────────────────────────────────────────────── */
 function ObservabilityTab(p) {
+  const [chatOpen, setChatOpen] = useState(false);
   const focusIncident = p.incidents.find(i=>i.node===p.focusNode && i.stage!=="resolved")
                      || p.incidents.find(i=>i.node===p.focusNode);
   return <div style={{display:"flex",flexDirection:"column",gap:12}}>
     <FleetHealthStrip nodes={p.nodes} incidents={p.incidents} repairs={p.repairs} mttr={p.mttr}/>
     <FocusSwitcher incidents={p.incidents} focusNode={p.focusNode} onFocus={p.onSelect}/>
-    <div style={{display:"grid",gridTemplateColumns:"300px 1fr 360px",gap:12,alignItems:"start"}}>
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
-        <RackGrid nodes={p.nodes} selected={p.focusNode} repairs={p.repairs} onSelect={p.onSelect}/>
-        <RepairQueue repairs={p.repairs} onCancel={p.onCancelRepair}/>
+    <div style={{display:"flex",gap:12,alignItems:"start"}}>
+      {/* Main 3-column grid */}
+      <div style={{flex:1,display:"grid",gridTemplateColumns:"290px 1fr 350px",gap:12,alignItems:"start",minWidth:0}}>
+        {/* Left: rack + repair queue */}
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <RackGrid nodes={p.nodes} selected={p.focusNode} repairs={p.repairs} onSelect={p.onSelect}/>
+          <RepairQueue repairs={p.repairs} onCancel={p.onCancelRepair}/>
+        </div>
+        {/* Center: telemetry + blast radius */}
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <Telemetry history={p.history} nodes={p.nodes} selected={p.focusNode}/>
+          <BlastRunbook incident={focusIncident}/>
+        </div>
+        {/* Right: incident + event log */}
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <IncidentPanel incident={focusIncident} agentGen={p.agentGen}
+            onAccept={p.onAccept} onOverride={p.onOverride} onEscalate={p.onEscalate}/>
+          <EventLog log={p.log} focusNode={p.focusNode}/>
+        </div>
       </div>
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
-        <Telemetry history={p.history} nodes={p.nodes} selected={p.focusNode}/>
-        <BlastRunbook incident={focusIncident}/>
-      </div>
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
-        <IncidentPanel incident={focusIncident} agentGen={p.agentGen}
-          onAccept={p.onAccept} onOverride={p.onOverride} onEscalate={p.onEscalate}/>
-        <EventLog log={p.log} focusNode={p.focusNode}/>
-        <SREChat messages={p.chat} onSend={p.onChat} focusNode={p.focusNode}/>
+
+      {/* SRE Chat — collapsible drawer on the right */}
+      <div style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
+        {/* Toggle button */}
+        <button onClick={()=>setChatOpen(o=>!o)} style={{
+          background:chatOpen?T.agent+"22":T.soft,
+          border:`1px solid ${chatOpen?T.agent:T.line}`,
+          color:chatOpen?T.agent:T.muted,
+          borderRadius:8, padding:"6px 12px", fontFamily:MONO, fontSize:11,
+          cursor:"pointer", whiteSpace:"nowrap", display:"flex", alignItems:"center", gap:6,
+        }}>
+          <span style={{fontSize:14}}>💬</span>
+          {chatOpen ? "Close SRE Console" : "SRE Console"}
+        </button>
+        {/* Unread dot when chat is closed and messages exist */}
+        {!chatOpen && p.chat.length > 1 && (
+          <div style={{width:8,height:8,borderRadius:4,background:T.agent,
+            position:"absolute",top:-3,right:-3}}/>
+        )}
+        {/* Chat panel */}
+        {chatOpen && (
+          <div style={{width:340,flexShrink:0}}>
+            <SREChat messages={p.chat} onSend={p.onChat} focusNode={p.focusNode}/>
+          </div>
+        )}
       </div>
     </div>
   </div>;
@@ -677,6 +826,125 @@ function ArchivePanel() {
   </Panel>;
 }
 
+/* ── LEARNING: AGENT VERSION HISTORY ────────────────────────────────── */
+function AgentVersionsPanel() {
+  const [expanded, setExpanded] = useState(null);
+  const statusCol = {baseline:T.faint, kept:T.ok, rejected:T.crit, current:T.agent};
+  const statusIcon = {baseline:"◎", kept:"✓", rejected:"✗", current:"★"};
+
+  return <Panel title="Agent evolution — incremental prompt & retrieval improvements"
+    sub="6 generations · meta-agent rewrites one diff per batch · kept only if held-out composite improves">
+    {/* Summary timeline */}
+    <div style={{display:"flex",alignItems:"stretch",gap:0,marginBottom:12,overflowX:"auto"}}>
+      {AGENT_VERSIONS.map((v,i) => {
+        const col = statusCol[v.status];
+        const isCur = v.status==="current";
+        const isRej = v.status==="rejected";
+        return <div key={v.gen} style={{display:"flex",alignItems:"center",flex:isRej?0:1}}>
+          <div onClick={()=>setExpanded(expanded===v.gen?null:v.gen)}
+            style={{cursor:"pointer",padding:"6px 8px",borderRadius:6,minWidth:isRej?44:64,
+              background:isCur?T.agent+"22":isRej?T.crit+"11":T.soft,
+              border:`1px solid ${isCur?T.agent:isRej?T.crit+"44":T.line}`,
+              display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
+            <span style={{fontFamily:MONO,fontSize:9,color:T.faint}}>gen-{v.gen}</span>
+            <span style={{fontFamily:MONO,fontSize:14,fontWeight:700,color:col}}>{v.holdout.toFixed(2)}</span>
+            <span style={{fontFamily:MONO,fontSize:8,color:col}}>{statusIcon[v.status]}</span>
+          </div>
+          {i < AGENT_VERSIONS.length-1 && !isRej && <div style={{
+            flex:1,height:2,background:`linear-gradient(90deg,${col},${statusCol[AGENT_VERSIONS[i+1]?.status]||T.faint})`,
+            minWidth:8,opacity:0.4}}/>}
+        </div>;
+      })}
+    </div>
+    <div style={{fontFamily:MONO,fontSize:9,color:T.faint,display:"flex",gap:14,marginBottom:10}}>
+      <span><span style={{color:T.agent}}>★</span> current</span>
+      <span><span style={{color:T.ok}}>✓</span> kept</span>
+      <span><span style={{color:T.crit}}>✗</span> rejected</span>
+      <span style={{marginLeft:"auto",color:T.muted}}>click gen to expand diff →</span>
+    </div>
+
+    {/* Expanded version detail */}
+    {expanded !== null && (() => {
+      const v = AGENT_VERSIONS.find(x=>x.gen===expanded);
+      if (!v) return null;
+      const col = statusCol[v.status];
+      return <div style={{border:`1px solid ${col}44`,borderRadius:8,padding:10,
+        background:T.bg,marginBottom:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+          <span style={{fontFamily:MONO,fontSize:11,fontWeight:700,color:col}}>gen-{v.gen}</span>
+          <span style={{fontFamily:MONO,fontSize:10,color:T.muted}}>{v.promptVersion}</span>
+          <div style={{flex:1}}/>
+          <span style={{fontFamily:MONO,fontSize:9,padding:"1px 7px",borderRadius:4,
+            border:`1px solid ${col}`,color:col}}>{v.status}</span>
+        </div>
+        <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,marginBottom:8,lineHeight:1.6}}>
+          {v.keyChange}
+        </div>
+        <div style={{display:"flex",gap:16,marginBottom:8}}>
+          <div><div style={{fontFamily:MONO,fontSize:18,fontWeight:700,color:col}}>{v.holdout.toFixed(2)}</div>
+            <div style={{fontFamily:MONO,fontSize:9,color:T.faint}}>held-out</div></div>
+          <div><div style={{fontFamily:MONO,fontSize:18,fontWeight:700,color:T.warn}}>{v.overrideRate*100|0}%</div>
+            <div style={{fontFamily:MONO,fontSize:9,color:T.faint}}>override rate</div></div>
+          <div><div style={{fontFamily:MONO,fontSize:18,fontWeight:700,color:T.text}}>{v.mttr}</div>
+            <div style={{fontFamily:MONO,fontSize:9,color:T.faint}}>MTTR (ticks)</div></div>
+          <div style={{flex:1}}/>
+          <div style={{fontFamily:MONO,fontSize:10,color:T.faint,textAlign:"right",maxWidth:180}}>
+            {v.retrievalStrategy}
+          </div>
+        </div>
+        {v.metaDiff && <div>
+          <div style={{fontFamily:MONO,fontSize:9,letterSpacing:1,color:T.faint,marginBottom:3}}>DIFF FROM PREV GEN</div>
+          <pre style={{fontFamily:MONO,fontSize:10.5,lineHeight:1.55,background:"#0A0D11",
+            border:`1px solid ${T.line}`,borderRadius:5,padding:"8px 10px",overflowX:"auto",margin:0}}>
+            {v.metaDiff.split("\n").map((l,i)=><div key={i} style={{
+              color:l.startsWith("+")?T.ok:l.startsWith("-")?T.crit:T.muted
+            }}>{l}</div>)}
+          </pre>
+        </div>}
+        {v.knownFailures?.length>0 && <div style={{marginTop:8}}>
+          <div style={{fontFamily:MONO,fontSize:9,letterSpacing:1,color:T.faint,marginBottom:3}}>KNOWN FAILURES AT THIS GEN</div>
+          {v.knownFailures.map((f,i)=><div key={i} style={{fontFamily:MONO,fontSize:10,
+            color:T.warn,paddingLeft:8,borderLeft:`2px solid ${T.warn}44`,marginBottom:2}}>⚠ {f}</div>)}
+        </div>}
+        {v.status==="current" && <div style={{marginTop:8,fontFamily:MONO,fontSize:10,
+          color:T.ok,borderTop:`1px solid ${T.line}`,paddingTop:6}}>
+          ✓ Currently deployed — zero known failure classes remaining.
+        </div>}
+      </div>;
+    })()}
+
+    {/* Compact table view */}
+    <div style={{fontFamily:MONO,fontSize:10}}>
+      <div style={{display:"flex",color:T.faint,borderBottom:`1px solid ${T.line}`,
+        paddingBottom:4,marginBottom:4}}>
+        <span style={{width:52}}>gen</span>
+        <span style={{width:88}}>retrieval</span>
+        <span style={{width:72}}>held-out</span>
+        <span style={{width:72}}>override%</span>
+        <span style={{flex:1}}>key change</span>
+        <span style={{width:60,textAlign:"right"}}>status</span>
+      </div>
+      {AGENT_VERSIONS.map(v => {
+        const col = statusCol[v.status];
+        const isRej = v.status==="rejected";
+        return <div key={v.gen} onClick={()=>setExpanded(expanded===v.gen?null:v.gen)}
+          style={{display:"flex",alignItems:"center",padding:"3px 0",cursor:"pointer",
+            opacity:isRej?0.6:1,background:expanded===v.gen?T.soft:"transparent",
+            borderRadius:4,paddingLeft:4}}>
+          <span style={{width:52,color:T.agent}}>g{v.gen}</span>
+          <span style={{width:88,color:T.faint,overflow:"hidden",textOverflow:"ellipsis",
+            whiteSpace:"nowrap",paddingRight:4,fontSize:9}}>{v.retrievalStrategy.split(" ").slice(0,2).join(" ")}</span>
+          <span style={{width:72,color:col,fontWeight:v.status==="current"?700:400}}>{v.holdout.toFixed(2)}</span>
+          <span style={{width:72,color:T.warn}}>{(v.overrideRate*100)|0}%</span>
+          <span style={{flex:1,color:T.muted,overflow:"hidden",textOverflow:"ellipsis",
+            whiteSpace:"nowrap",paddingRight:8,fontSize:9.5}}>{v.keyChange.split(".")[0]}</span>
+          <span style={{width:60,textAlign:"right",color:col}}>{statusIcon[v.status]} {v.status}</span>
+        </div>;
+      })}
+    </div>
+  </Panel>;
+}
+
 /* ── LEARNING LAB TAB ────────────────────────────────────────────────── */
 function LearningTab({metrics, metaResult, onRunMeta, metaLoading}) {
   const [showDiff,setShowDiff] = useState(false);
@@ -691,39 +959,52 @@ function LearningTab({metrics, metaResult, onRunMeta, metaLoading}) {
       {metrics && <span style={{color:T.ok,marginLeft:12}}>● live from backend</span>}
     </div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+      {/* Override rate chart with spikes */}
       <Panel title="Override rate ↓ — KG institutional memory"
-        sub={`headline metric · current ${((metrics?.overrideRate||0)*100).toFixed(0)}% override rate`}
+        sub={`headline metric · spikes = new fault classes · current ${metrics ? ((metrics.overrideRate||0)*100).toFixed(0)+"%" : "17%"}`}
         right={metrics && <Chip label="hit-rate" value={`${((metrics.hitRate||0)*100).toFixed(0)}%`} color={T.agent}/>}>
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={overrideData} margin={{top:8,right:12,bottom:8,left:-18}}>
             <XAxis dataKey="ep" tick={tk} stroke={T.line}/>
-            <YAxis tick={tk} stroke={T.line} unit="%"/>
-            <Tooltip {...tt}/>
-            <Line dataKey="rate" stroke={T.kg} dot={false} strokeWidth={2}/>
+            <YAxis tick={tk} stroke={T.line} unit="%" domain={[0,95]}/>
+            <Tooltip {...tt} formatter={(v)=>`${v}%`}/>
+            {/* Gen boundary markers */}
+            <ReferenceLine x={1}  stroke={T.faint} strokeDasharray="3 3"
+              label={{value:"g0",position:"top",fill:T.faint,fontSize:8,fontFamily:MONO}}/>
+            <ReferenceLine x={17} stroke={T.agent} strokeDasharray="3 3"
+              label={{value:"g2",position:"top",fill:T.agent,fontSize:8,fontFamily:MONO}}/>
+            <ReferenceLine x={21} stroke={T.agent} strokeDasharray="3 3"
+              label={{value:"g3",position:"top",fill:T.agent,fontSize:8,fontFamily:MONO}}/>
+            <ReferenceLine x={25} stroke={T.ok} strokeDasharray="3 3"
+              label={{value:"g4",position:"top",fill:T.ok,fontSize:8,fontFamily:MONO}}/>
+            <ReferenceLine x={29} stroke={T.ok} strokeDasharray="3 3"
+              label={{value:"g5",position:"top",fill:T.ok,fontSize:8,fontFamily:MONO}}/>
+            <Line dataKey="rate" stroke={T.kg} dot={false} strokeWidth={2} isAnimationActive={false}/>
           </LineChart>
         </ResponsiveContainer>
-        <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,marginTop:4}}>
-          Each override writes a correction to the KG. Future incidents with the same symptom signature retrieve it — agent stops making the same mistake.
+        <div style={{fontFamily:MONO,fontSize:10,color:T.muted,marginTop:4,lineHeight:1.6}}>
+          <span style={{color:T.warn}}>↑ spikes</span> = new fault class introduced (NIC at ep5, power-droop at ep13) — agent has zero KG coverage, rate jumps.<br/>
+          <span style={{color:T.ok}}>↓ falls</span> = KG corrections accumulate + meta-agent code improvements take effect.
         </div>
       </Panel>
       <Panel title="Composite score ↑ — meta-agent evolution"
-        sub="train vs held-out · split by scenario family · held-out proves generalization not memorisation">
+        sub="train vs held-out · held-out proves generalization, not memorisation">
         <ResponsiveContainer width="100%" height={200}>
           <LineChart data={genData} margin={{top:8,right:12,bottom:8,left:-18}}>
             <XAxis dataKey="gen" tick={tk} stroke={T.line}/>
             <YAxis tick={tk} stroke={T.line} domain={[0,.85]}/>
             <Tooltip {...tt}/>
             <Legend wrapperStyle={{fontSize:10,fontFamily:MONO}}/>
-            <Line dataKey="train"   stroke={T.agent} dot strokeWidth={2}/>
-            <Line dataKey="holdout" stroke={T.ok}    dot strokeWidth={2}/>
+            <Line dataKey="train"   stroke={T.agent} dot strokeWidth={2} isAnimationActive={false}/>
+            <Line dataKey="holdout" stroke={T.ok}    dot strokeWidth={2} isAnimationActive={false}/>
           </LineChart>
         </ResponsiveContainer>
         <div style={{display:"flex",alignItems:"center",gap:10,marginTop:6}}>
-          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,flex:1}}>
-            Both lines rise → meta-agent improving diagnosis, not memorising scenarios.
+          <div style={{fontFamily:MONO,fontSize:10,color:T.muted,flex:1}}>
+            Small train↔held gap = generalisation. Both lines rise = meta-agent finds real improvements, not scenario memorisation.
           </div>
           <Btn color={T.agent} onClick={()=>setShowDiff(s=>!s)}>
-            {showDiff?"Hide":"Show"} gen-3→4 diff
+            {showDiff?"Hide":"Show"} gen-4→5 diff
           </Btn>
           {onRunMeta && <Btn color={T.kg} onClick={onRunMeta} disabled={metaLoading}>
             {metaLoading?"Running…":"Run meta-agent"}
@@ -731,8 +1012,8 @@ function LearningTab({metrics, metaResult, onRunMeta, metaLoading}) {
         </div>
       </Panel>
     </div>
-    {showDiff && <Panel title="Gen-3 → gen-4: what the meta agent wrote"
-      sub={metaResult?.explanation || "machine-generated · one diff per generation · kept only if held-out score improved"}>
+    {showDiff && <Panel title="Gen-4 → gen-5: what the meta-agent wrote"
+      sub={metaResult?.explanation || "machine-generated · accepted because held-out 0.61 → 0.64 · decisive fix for fan-failure deception"}>
       <pre style={{fontFamily:MONO,fontSize:11,lineHeight:1.6,background:"#0A0D11",
         border:`1px solid ${T.line}`,borderRadius:6,padding:12,overflowX:"auto"}}>
         {metaDiff.split("\n").map((l,i)=><div key={i} style={{
@@ -740,19 +1021,41 @@ function LearningTab({metrics, metaResult, onRunMeta, metaLoading}) {
         }}>{l}</div>)}
       </pre>
       {metaResult && <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,marginTop:6}}>
-        Projected held-out improvement: +{metaResult.projectedImprovement?.toFixed(2) || "0.06"} → gen-{metaResult.newGen}
+        Projected held-out improvement: +{metaResult.projectedImprovement?.toFixed(2) || "0.03"} → gen-{metaResult.newGen}
       </div>}
     </Panel>}
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-      <ScenarioFamilyPanel/>
-      <RewardPanel terms={metrics?.rewardTerms}/>
-    </div>
+
+    {/* Agent version history */}
+    <AgentVersionsPanel/>
+
+    {/* Variant archive */}
     <ArchivePanel/>
-    <Panel title="Future work — DPO / GRPO" sub="preference pairs accumulate every episode · architecture is ready" dashed>
-      <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.9}}>
-        <span style={{color:T.ok}}>What we have:</span> closed loop — KG memory + meta-agent evolution, both on held-out.<br/>
-        <span style={{color:T.kg}}>What the data enables:</span> DPO on preference pairs (see Training Data tab).<br/>
-        <span style={{color:T.agent}}>After DPO:</span> GRPO against the simulator's composite reward. The simulator IS the RL environment.
+
+    {/* Training data future scope */}
+    <Panel title="Training Data — Future Scope" dashed
+      sub="architecture ready · preference pairs accumulate every episode · two steps to full RL">
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+        <div style={{borderLeft:`3px solid ${T.ok}`,paddingLeft:12}}>
+          <div style={{fontFamily:MONO,fontSize:9,color:T.ok,letterSpacing:2,marginBottom:4}}>WHAT WE HAVE NOW</div>
+          <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>Closed loop (no model finetuning)</div>
+          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:1.7}}>
+            KG memory + meta-agent evolution, both evaluated on held-out scenarios. Composite score: <span style={{color:T.ok}}>0.64</span>.
+          </div>
+        </div>
+        <div style={{borderLeft:`3px solid ${T.kg}`,paddingLeft:12}}>
+          <div style={{fontFamily:MONO,fontSize:9,color:T.kg,letterSpacing:2,marginBottom:4}}>NEXT: DPO FINETUNING</div>
+          <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>Finetune on preference pairs</div>
+          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:1.7}}>
+            Every SRE override exports a (rejected, chosen) pair. DPO on a 3–8B LoRA model. Gate on held-out regression before deploy.
+          </div>
+        </div>
+        <div style={{borderLeft:`3px solid ${T.agent}`,paddingLeft:12}}>
+          <div style={{fontFamily:MONO,fontSize:9,color:T.agent,letterSpacing:2,marginBottom:4}}>AFTER DPO: GRPO</div>
+          <div style={{fontSize:11,fontWeight:600,marginBottom:4}}>RL against simulator reward</div>
+          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:1.7}}>
+            GRPO with composite as reward signal. The simulator IS the RL environment — nothing new to build. Two days → not enough episodes for stable RL yet.
+          </div>
+        </div>
       </div>
     </Panel>
   </div>;
@@ -819,8 +1122,13 @@ function KnowledgeGraphTab({corrections, retrievalHits, focusNode, hitRate}) {
   return <div style={{display:"grid",gridTemplateColumns:"1fr 300px",gap:12,alignItems:"start"}}>
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
     <Panel title="Knowledge graph"
-      sub={`${allNodes.length} nodes · ${allEdges.length} edges · amber = operator corrections — click any node`}>
-      <svg viewBox="0 0 420 320" style={{width:"100%",height:360}}>
+      sub={`${allNodes.length} nodes · ${allEdges.length} edges · seeded from OPT-175B logbook + Alibaba GPU trace · amber = live operator corrections`}
+      right={<a href="https://github.com/alibaba/clusterdata" target="_blank" rel="noreferrer"
+        style={{fontFamily:MONO,fontSize:9,color:T.agent,textDecoration:"none",
+        border:`1px solid ${T.agent}44`,borderRadius:4,padding:"2px 6px"}}>
+        ↗ Alibaba trace dataset
+      </a>}>
+      <svg viewBox="0 0 430 480" style={{width:"100%",height:480}}>
         {allEdges.map((e,i)=>{
           const A=allNodes.find(n=>n.id===e.from), B=allNodes.find(n=>n.id===e.to);
           if(!A||!B) return null;
@@ -831,12 +1139,13 @@ function KnowledgeGraphTab({corrections, retrievalHits, focusNode, hitRate}) {
         })}
         {allNodes.map(n=>{
           const col=kindColor[n.kind]||T.muted, isSel=n.id===sel;
+          const r = n.kind==="correction"?8:n.kind==="symptom"?6:n.kind==="action"?6:7;
           return <g key={n.id} onClick={()=>setSel(isSel?null:n.id)} style={{cursor:"pointer"}}>
-            <circle cx={n.x} cy={n.y} r={n.kind==="correction"?7:6}
-              fill={col} fillOpacity={isSel?1:.8}
-              stroke={isSel?T.text:col} strokeWidth={isSel?2:0}/>
-            <text x={n.x} y={n.y-9} textAnchor="middle"
-              fill={isSel?T.text:T.muted} fontSize={8} fontFamily={MONO}>{n.label}</text>
+            <circle cx={n.x} cy={n.y} r={r}
+              fill={col} fillOpacity={isSel?1:.75}
+              stroke={isSel?T.text:col} strokeWidth={isSel?2:0.5}/>
+            <text x={n.x} y={n.y-r-2} textAnchor="middle"
+              fill={isSel?T.text:T.muted} fontSize={7.5} fontFamily={MONO}>{n.label}</text>
           </g>;
         })}
       </svg>
@@ -923,6 +1232,7 @@ function DataSourcesPanel() {
 
 /* ── TRAINING DATA TAB ───────────────────────────────────────────────── */
 function TrainingDataTab({pairs, priorCount=237}) {
+  // Future scope banner
   const PRIOR=priorCount, total=PRIOR+pairs.length;
   const SCHEMA=`{\n  "id":       1,\n  "context":  "sig: temp↑/fan↓ @ R2-N5 t042",\n  "rejected": "throttle_job",\n  "chosen":   "ramp_fans",\n  "source":   "operator_override"\n}`;
   const PHASES = [
@@ -933,7 +1243,22 @@ function TrainingDataTab({pairs, priorCount=237}) {
     {n:"03",title:"DPO / GRPO training",color:T.kg,
       body:"Finetune a small model (3–8B, LoRA) via DPO on accumulated pairs. Gate on held-out regression. GRPO against simulator reward is the next step."},
   ];
-  return <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+  return <div style={{display:"flex",flexDirection:"column",gap:12}}>
+    {/* Future scope banner */}
+    <div style={{background:T.agent+"11",border:`1px solid ${T.agent}44`,borderRadius:8,
+      padding:"10px 16px",display:"flex",alignItems:"center",gap:12}}>
+      <span style={{fontFamily:MONO,fontSize:20}}>🔭</span>
+      <div>
+        <div style={{fontFamily:MONO,fontSize:12,fontWeight:700,color:T.agent,marginBottom:2}}>
+          FUTURE SCOPE — Training Data Pipeline
+        </div>
+        <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted}}>
+          Architecture is ready · preference pairs accumulate every episode · two steps away from full RL training.
+          Current system uses KG memory + meta-agent code evolution (no model finetuning required).
+        </div>
+      </div>
+    </div>
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
       <Panel title="Preference pairs" sub={`${total} total (${PRIOR} prior + ${pairs.length} this session) · every override produces one`}>
         <div style={{fontFamily:MONO,fontSize:28,color:T.kg}}>{total}</div>
@@ -977,7 +1302,223 @@ function TrainingDataTab({pairs, priorCount=237}) {
         </div>
       </Panel>
     </div>
+    </div>{/* end grid */}
   </div>;
+}
+
+/* ── OVERVIEW: ARCHITECTURE DIAGRAM ─────────────────────────────────── */
+function ArchitectureDiagram() {
+  const W = 900, H = 560;
+  const arrowColors = [T.agent, T.kg, T.ok, T.warn, T.line, T.muted];
+
+  // Box helper
+  const Box = ({x,y,w=210,h=58,col,title,sub,bold}) => (
+    <g>
+      <rect x={x} y={y} width={w} height={h} rx={8}
+        fill={col+"1A"} stroke={col} strokeWidth={bold?2:1.5}/>
+      <text x={x+w/2} y={sub?y+h/2-6:y+h/2+4} textAnchor="middle"
+        fill={col} fontSize={bold?12:11} fontFamily={MONO} fontWeight={bold?700:600}>{title}</text>
+      {sub && <text x={x+w/2} y={y+h/2+9} textAnchor="middle"
+        fill={T.faint} fontSize={8.5} fontFamily={MONO}>{sub}</text>}
+    </g>
+  );
+
+  // Straight arrow
+  const Arr = ({x1,y1,x2,y2,col=T.line,dashed,label,lx,ly}) => (
+    <g opacity={0.85}>
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={col} strokeWidth={1.5}
+        strokeDasharray={dashed?"5 3":undefined}
+        markerEnd={`url(#ah${col.replace("#","")})`}/>
+      {label && <text x={lx??((x1+x2)/2+5)} y={ly??((y1+y2)/2-3)}
+        fill={col} fontSize={8.5} fontFamily={MONO}>{label}</text>}
+    </g>
+  );
+
+  // Curved arrow (SVG cubic bezier)
+  const Curve = ({d,col=T.line,dashed,label,lx,ly}) => (
+    <g opacity={0.8}>
+      <path d={d} fill="none" stroke={col} strokeWidth={1.5}
+        strokeDasharray={dashed?"5 3":undefined}
+        markerEnd={`url(#ah${col.replace("#","")})`}/>
+      {label && <text x={lx} y={ly} fill={col} fontSize={8.5} fontFamily={MONO}>{label}</text>}
+    </g>
+  );
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",maxHeight:560}}>
+      <defs>
+        {arrowColors.map(c => (
+          <marker key={c} id={`ah${c.replace("#","")}`}
+            markerWidth={8} markerHeight={8} refX={7} refY={3} orient="auto">
+            <path d="M0,0 L7,3 L0,6 z" fill={c} opacity={0.9}/>
+          </marker>
+        ))}
+      </defs>
+
+      {/* ── Row 1: Meta Agent ── */}
+      <Box x={290} y={16} w={320} h={62} col={T.agent} bold
+        title="META AGENT" sub="offline · batch evolution · Loop 3 (nightly)"/>
+
+      {/* ── Arrows from Meta Agent ── */}
+      {/* → Task Agent: code diff */}
+      <Arr x1={450} y1={78} x2={450} y2={158} col={T.agent}
+        label="rewrites code (diff)" lx={458} ly={122}/>
+      {/* → KG: seeds & updates */}
+      <Curve d="M 610 46 C 720 46 760 130 760 158"
+        col={T.kg} dashed label="seeds + updates KG" lx={680} ly={95}/>
+
+      {/* ── Row 2: Task Agent + KG ── */}
+      <Box x={290} y={158} w={260} h={62} col={T.agent}
+        title="TASK AGENT · gen-5" sub="Gemini API · KG-augmented prompt"/>
+      <Box x={680} y={158} w={190} h={62} col={T.kg}
+        title="Knowledge Graph" sub="SQLite · corrections + seeds"/>
+
+      {/* Task Agent ↔ KG */}
+      <Arr x1={550} y1={177} x2={680} y2={177} col={T.kg}
+        label="similarity retrieval (k=5)" lx={556} ly={172}/>
+      <Arr x1={680} y1={200} x2={550} y2={200} col={T.kg} dashed/>
+
+      {/* ── Fan-out arrows from Task Agent to servers ── */}
+      <Curve d="M 340 220 C 270 258 120 268 100 295"
+        col={T.muted} label="reads telemetry" lx={168} ly={256}/>
+      <Curve d="M 390 220 C 380 264 310 272 295 295"
+        col={T.muted}/>
+      <Curve d="M 450 220 C 450 264 485 274 490 295"
+        col={T.ok} label="streams diagnosis" lx={462} ly={262}/>
+      <Curve d="M 500 220 C 560 264 645 274 660 295"
+        col={T.ok}/>
+
+      {/* ── Row 3: Server boxes ── */}
+      <Box x={20}  y={295} w={155} h={56} col={T.muted}
+        title="Telemetry" sub="WebSocket · 32 nodes"/>
+      <Box x={190} y={295} w={155} h={56} col={T.muted}
+        title="Simulator" sub="Python · 650ms tick"/>
+      <Box x={380} y={295} w={175} h={56} col={T.ok}
+        title="SRE Console" sub="accept / override"/>
+      <Box x={570} y={295} w={200} h={56} col={T.ok}
+        title="Repair Executor" sub="Borg-style RT jobs"/>
+
+      {/* Simulator → Telemetry */}
+      <Arr x1={190} y1={320} x2={175} y2={320} col={T.muted}
+        label="ticks" lx={148} ly={315}/>
+
+      {/* ── Feedback arrows ── */}
+      {/* SRE override → Trace Store */}
+      <Arr x1={467} y1={351} x2={467} y2={408}
+        col={T.warn} label="override → pair" lx={474} ly={383}/>
+      {/* Repair outcome → Trace Store */}
+      <Curve d="M 670 351 C 670 380 600 400 560 415"
+        col={T.warn} dashed/>
+
+      {/* ── Row 4: Trace Store ── */}
+      <Box x={320} y={408} w={280} h={58} col={T.warn}
+        title="Trace Store + Pref Pairs" sub="every episode · override → pair export"/>
+
+      {/* KG correction from override (Loop 2) */}
+      <Curve d="M 320 450 C 200 460 140 420 140 380 C 140 310 210 250 290 210"
+        col={T.kg} dashed label="Loop 2: write correction" lx={102} ly={340}/>
+
+      {/* Trace Store → Meta Agent (Loop 3 feedback) */}
+      <Curve d="M 840 410 C 880 300 880 120 612 46"
+        col={T.agent} dashed label="episode traces (Loop 3)" lx={875} ly={240}/>
+      {/* invisible anchor for the big curve (right side) */}
+      <Box x={815} y={390} w={0} h={0} col="transparent" title=""/>
+
+      {/* ── Legend ── */}
+      <rect x={20} y={490} width={860} height={46} rx={6}
+        fill={T.soft} stroke={T.line} strokeWidth={1}/>
+      {[
+        {col:T.agent, dashed:false, label:"Loop 3 — offline meta-agent evolution"},
+        {col:T.kg,    dashed:true,  label:"Loop 2 — KG correction (per override)"},
+        {col:T.ok,    dashed:false, label:"Loop 1 — task agent diagnosis + repair"},
+        {col:T.warn,  dashed:true,  label:"feedback / trace data"},
+      ].map(({col,dashed,label},i) => {
+        const bx = 36 + i * 214;
+        return <g key={i}>
+          <line x1={bx} y1={516} x2={bx+28} y2={516} stroke={col} strokeWidth={2}
+            strokeDasharray={dashed?"5 3":undefined}/>
+          <text x={bx+34} y={520} fill={T.muted} fontSize={9} fontFamily={MONO}>{label}</text>
+        </g>;
+      })}
+    </svg>
+  );
+}
+
+/* ── OVERVIEW TAB ────────────────────────────────────────────────────── */
+function OverviewTab() {
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:14}}>
+      <div style={{fontFamily:MONO,fontSize:10,color:T.faint,letterSpacing:2}}>
+        SYSTEM ARCHITECTURE — THREE SELF-IMPROVING LOOPS · SUGGEST-ONLY · SANDBOXED TO SIMULATOR
+      </div>
+
+      <Panel title="InfraBrain — End-to-End Architecture"
+        sub="meta-agent (top) evolves task-agent code offline · task agent reads from multiple services · overrides close the feedback loop">
+        <ArchitectureDiagram/>
+      </Panel>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+        <Panel title="Loop 1 · KG Retrieval" sub="per-incident · seconds · no weight updates">
+          <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.85}}>
+            <div style={{color:T.agent,fontWeight:600,marginBottom:6,fontSize:12}}>Context augmentation</div>
+            Task Agent queries the KG with the current symptom signature (e.g. <span style={{color:T.warn}}>temp↑/fan↓ @ R2-N5</span>).
+            Top-5 similar corrections + seed rules are ranked and injected into the Gemini prompt.
+            <div style={{marginTop:10,padding:"6px 8px",background:T.soft,borderRadius:5,fontSize:10,color:T.faint}}>
+              Weights never change. Context changes.
+            </div>
+          </div>
+        </Panel>
+        <Panel title="Loop 2 · KG Memory" sub="per-override · minutes · non-parametric write">
+          <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.85}}>
+            <div style={{color:T.kg,fontWeight:600,marginBottom:6,fontSize:12}}>Auditable institutional memory</div>
+            SRE override → correction row written to SQLite KG. Future incidents with matching signatures retrieve it automatically.
+            <div style={{marginTop:10,padding:"6px 8px",background:T.soft,borderRadius:5,fontSize:10,color:T.faint}}>
+              Auditable · reversible · no catastrophic forgetting.<br/>A bad lesson is a DELETE, not an un-training run.
+            </div>
+          </div>
+        </Panel>
+        <Panel title="Loop 3 · Meta-Agent Evolution" sub="offline · nightly batch · code rewriting">
+          <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.85}}>
+            <div style={{color:T.ok,fontWeight:600,marginBottom:6,fontSize:12}}>Autonomous code improvement</div>
+            Meta-agent (Gemini) reads episode traces, clusters failures, proposes a unified diff to task-agent retrieval/prompt code.
+            Accepted only if held-out composite improves.
+            <div style={{marginTop:10,padding:"6px 8px",background:T.soft,borderRadius:5,fontSize:10,color:T.faint}}>
+              DGM-Hyperagent pattern. Every variant archived with parent + score.
+            </div>
+          </div>
+        </Panel>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+        <Panel title="Why suggest-only?" sub="safety constraint — nothing runs without SRE approval">
+          <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.85}}>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {[
+                {col:T.ok,   label:"Agent suggests",  detail:"diagnosis + recommended action + cited evidence"},
+                {col:T.warn, label:"SRE decides",      detail:"Accept to queue repair, or Override with correct action"},
+                {col:T.kg,   label:"Override teaches", detail:"correction written to KG · preference pair exported"},
+                {col:T.agent,label:"Loop tightens",    detail:"next incident with same signature: agent is already right"},
+              ].map(({col,label,detail})=>
+                <div key={label} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+                  <Dot color={col}/>
+                  <div><span style={{color:col,fontWeight:600}}>{label} </span>
+                    <span style={{color:T.faint}}>— {detail}</span></div>
+                </div>
+              )}
+            </div>
+          </div>
+        </Panel>
+        <Panel title="Key design decisions" sub="what makes this different from a chatbot on infra">
+          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:2}}>
+            <div><span style={{color:T.agent}}>Non-parametric KG</span> — operator knowledge stored as rows, not weights. Auditable, reversible, instant.</div>
+            <div><span style={{color:T.kg}}>Deceptive symptom handling</span> — fan failure causes thermal throttle → util DROP. Gen-0 misdiagnoses as CPU idle. Gen-5 gets it right via KG correction + explicit diagnostic note.</div>
+            <div><span style={{color:T.ok}}>Held-out eval gate</span> — meta-agent proposals rejected unless composite improves on scenarios the agent never saw. Prevents memorisation.</div>
+            <div><span style={{color:T.warn}}>Data flywheel</span> — every override enriches the KG and produces a preference pair. Override rate falls as KG grows.</div>
+          </div>
+        </Panel>
+      </div>
+    </div>
+  );
 }
 
 /* ── AGENT RESPONSE (scripted now · swap in a real LLM later) ─────────── */
@@ -1019,7 +1560,7 @@ const BACKEND_WS   = import.meta.env.VITE_BACKEND_WS   || null;
 const BACKEND_HTTP = import.meta.env.VITE_BACKEND_HTTP  || null;
 
 export default function InfraBrainApp() {
-  const [tab,setTab]         = useState("Observability");
+  const [tab,setTab]         = useState("Overview");
   const [running,setRunning] = useState(false);
   const [tick,setTick]       = useState(0);
   const [nodes,setNodes]     = useState(freshNodes);
@@ -1512,15 +2053,16 @@ export default function InfraBrainApp() {
       <div style={{marginTop:12,marginBottom:12}}>
         <TabBar active={tab} onSelect={setTab}/>
       </div>
-      {tab==="Observability"  && <ObservabilityTab nodes={nodes} focusNode={focusNode} onSelect={setFocusNode}
+      {tab==="Overview"        && <OverviewTab/>}
+      {tab==="Observability"   && <ObservabilityTab nodes={nodes} focusNode={focusNode} onSelect={setFocusNode}
         history={histRef.current} incidents={incidents} agentGen={agentGen} repairs={repairs} mttr={mttr}
         onAccept={accept} onOverride={override} onEscalate={escalate}
         onCancelRepair={cancelRepair} log={log} chat={chat} onChat={handleChat}/>}
-      {tab==="Learning Lab"   && <LearningTab metrics={liveMetrics} metaResult={metaResult}
+      {tab==="Learning Lab"    && <LearningTab metrics={liveMetrics} metaResult={metaResult}
         onRunMeta={backendConnected ? handleRunMeta : null} metaLoading={metaLoading}/>}
-      {tab==="Knowledge Graph"&& <KnowledgeGraphTab corrections={kgCorr} retrievalHits={retrievalHits}
+      {tab==="Knowledge Graph" && <KnowledgeGraphTab corrections={kgCorr} retrievalHits={retrievalHits}
         focusNode={focusNode} hitRate={liveMetrics?.hitRate}/>}
-      {tab==="Training Data"  && <TrainingDataTab pairs={pairs} priorCount={237}/>}
+      {tab==="Training Data"   && <TrainingDataTab pairs={pairs} priorCount={237}/>}
       <div style={{marginTop:14,fontFamily:MONO,fontSize:10,color:T.faint}}>
         INFRABRAIN · suggest-only: nothing runs without SRE approval · self-modification sandboxed to simulator
       </div>

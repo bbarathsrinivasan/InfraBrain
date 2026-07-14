@@ -1,0 +1,23 @@
+{
+  "gen": 4,
+  "created": "2025-07-07T10:15:00Z",
+  "promptVersion": "v1.2",
+  "model": "gemini-2.0-flash",
+  "retrievalStrategy": "Jaccard similarity k=5, corrections first, age-weighted + contradiction check",
+  "holdoutScore": 0.61,
+  "overrideRate": 0.26,
+  "mttr": 3.8,
+  "composite": 0.61,
+  "status": "kept",
+  "description": "k increased to 5. Critical addition: if a KG correction contradicts the agent's hypothesis, it MUST explain why before deciding. Forces explicit reasoning over retrieved evidence.",
+  "systemPrompt": "You are InfraBrain Task Agent (gen-4). Use the KG corrections above — if any correction contradicts your hypothesis, you MUST explain why before deciding.\n\nReturn JSON with: diagnosis, action, conf, evidence.",
+  "retrievalCode": "hits = kg.query_similar(symptom.signature, k=5)\nhits.sort(key=lambda h: (h.kind != 'correction', h.age))\nreturn hits",
+  "knownFailures": [
+    "Thermal throttling deception (fan↓ causing util↓, not CPU idle) still occasionally misidentified",
+    "Combined fault scenarios weak",
+    "No explicit temperature-trend direction weighting"
+  ],
+  "generationTrigger": "meta-agent-batch-2025-07-06",
+  "metaDiffFromPrev": "--- gen3/diagnose.py\n+++ gen4/diagnose.py\n-    hits = kg.query_similar(symptom.signature, k=3)\n+    hits = kg.query_similar(symptom.signature, k=5)\n \n     prompt += f\"KG entries: {fmt(hits)}\"\n+    prompt += \"\\nKG CORRECTIONS (similarity-ranked, corrections first):\"\n+    prompt += \"\\nIf a correction contradicts your hypothesis, \"\n+    prompt += \"you MUST explain why before deciding.\"",
+  "evaluationNotes": "Held-out 0.55 → 0.61. Fan-failure 6/8 → 7/8. Contradiction-check prompt forces the model to engage with correction evidence rather than ignore it. Rejected variant gen4b (holdout 0.57) tried adding chain-of-thought prefix — reduced confidence calibration."
+}

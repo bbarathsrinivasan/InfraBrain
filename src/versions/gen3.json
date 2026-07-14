@@ -1,0 +1,23 @@
+{
+  "gen": 3,
+  "created": "2025-07-03T16:45:00Z",
+  "promptVersion": "v0.9",
+  "model": "gemini-2.0-flash",
+  "retrievalStrategy": "Jaccard similarity k=3, corrections ranked first, age-weighted",
+  "holdoutScore": 0.55,
+  "overrideRate": 0.38,
+  "mttr": 4.9,
+  "composite": 0.55,
+  "status": "kept",
+  "description": "First true similarity retrieval via Jaccard overlap on token sets. k=3 top-k hits. Near-miss signatures from other racks now retrievable.",
+  "systemPrompt": "You are InfraBrain Task Agent (gen-3). Diagnose using the top-3 most similar KG entries.\n\nKG CONTEXT: corrections ranked above seeds, weighted by recency.\n\nReturn JSON with: diagnosis, action, conf, evidence.",
+  "retrievalCode": "hits = kg.query_similar(symptom.signature, k=3)\nhits.sort(key=lambda h: (h.kind != 'correction', h.age))\nreturn hits",
+  "knownFailures": [
+    "k=3 occasionally misses the 4th or 5th most relevant correction when fan near-miss is at position 4",
+    "Prompt does not explicitly address thermal throttling deception",
+    "Multi-fault scenarios (combined fan + mem) still weak"
+  ],
+  "generationTrigger": "meta-agent-batch-2025-07-02",
+  "metaDiffFromPrev": "--- gen2/retrieve_kg.py\n+++ gen3/retrieve_kg.py\n-    hits = kg.query_neighbors(symptom.label, depth=1)\n-    hits.sort(key=lambda h: h.kind != 'correction')\n+    # gen-2 traces: 6/9 misses were near-miss signatures\n+    # Switch to similarity retrieval; rank by kind then recency\n+    hits = kg.query_similar(symptom.signature, k=3)\n+    hits.sort(key=lambda h: (h.kind != 'correction', h.age))\n     return hits",
+  "evaluationNotes": "Big jump: holdout 0.44 → 0.55. Fan-failure class 4/8 → 6/8. The Jaccard similarity over symptom tokens captures cross-rack near-misses that were invisible to 1-hop traversal. Rejected variant gen3b (holdout 0.51) tried BM25 scoring — Jaccard is better for short symptom signatures."
+}

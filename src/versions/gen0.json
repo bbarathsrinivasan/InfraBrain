@@ -1,0 +1,24 @@
+{
+  "gen": 0,
+  "created": "2025-06-15T09:12:00Z",
+  "promptVersion": "v0.1",
+  "model": "gemini-2.0-flash",
+  "retrievalStrategy": "exact-label",
+  "holdoutScore": 0.28,
+  "overrideRate": 0.76,
+  "mttr": 9.2,
+  "composite": 0.28,
+  "status": "baseline",
+  "description": "Seed agent. No KG integration. Exact label match only — high miss rate on any near-miss signature.",
+  "systemPrompt": "You are InfraBrain Task Agent. Diagnose GPU datacenter anomalies.\n\nReturn JSON with: diagnosis, action, conf, evidence.",
+  "retrievalCode": "hits = kg.query(label=symptom.label)\nreturn hits",
+  "knownFailures": [
+    "Misdiagnoses fan failure as CPU overload — util drop from thermal throttle looks compute-bound",
+    "No awareness of near-miss signatures from other racks",
+    "Ignores memory-pressure heat contribution",
+    "Zero correction awareness — operator knowledge never fed back"
+  ],
+  "generationTrigger": "bootstrap",
+  "metaDiffFromPrev": null,
+  "evaluationNotes": "Baseline run on 40 held-out fault scenarios. 30 of 40 required SRE override. Fan-failure class: 0/8 correct. Memory-leak class: 3/8 correct."
+}

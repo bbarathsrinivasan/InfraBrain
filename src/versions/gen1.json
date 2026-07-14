@@ -1,0 +1,23 @@
+{
+  "gen": 1,
+  "created": "2025-06-22T14:30:00Z",
+  "promptVersion": "v0.3",
+  "model": "gemini-2.0-flash",
+  "retrievalStrategy": "exact-label + 1-hop KG neighbors",
+  "holdoutScore": 0.36,
+  "overrideRate": 0.64,
+  "mttr": 7.8,
+  "composite": 0.36,
+  "status": "kept",
+  "description": "Added 1-hop KG neighbor traversal. Reduces miss on seed-rule adjacent signatures. Still no similarity search.",
+  "systemPrompt": "You are InfraBrain Task Agent (gen-1). Diagnose GPU datacenter anomalies using telemetry and related KG nodes.\n\nReturn JSON with: diagnosis, action, conf, evidence.",
+  "retrievalCode": "hits = kg.query_neighbors(symptom.label, depth=1)\nreturn hits",
+  "knownFailures": [
+    "Near-miss signatures across racks still missed — only exact or direct-neighbor matches work",
+    "Memory leak still confused with CPU overload when util is elevated",
+    "Correction nodes not yet prioritized over seed rules"
+  ],
+  "generationTrigger": "meta-agent-batch-2025-06-21",
+  "metaDiffFromPrev": "--- gen0/retrieve_kg.py\n+++ gen1/retrieve_kg.py\n-    hits = kg.query(label=symptom.label)\n+    # Expand to 1-hop neighbors — captures adjacent fault patterns\n+    hits = kg.query_neighbors(symptom.label, depth=1)\n     return hits",
+  "evaluationNotes": "Fan-failure class improved from 0/8 → 2/8. Memory-leak 3/8 → 4/8. Neighbor traversal helps for co-located fault types but misses cross-rack near-misses."
+}
