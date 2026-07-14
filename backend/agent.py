@@ -1,37 +1,44 @@
 """
-Task agent — Gemini-powered diagnosis with KG-augmented prompts.
+Task agent — scripted diagnosis + SRE chat (Gemini optional via USE_SCRIPTED_AGENT=false).
 
 Two retrieval modes (mirrors the meta-agent evolution):
   gen-0  : exact-label lookup (high miss rate on near-miss signatures)
   gen-4+ : similarity-ranked retrieval, corrections ranked first
 
-ask_agent_stream() — SRE-console chat, streaming token-by-token via SSE.
+ask_agent_stream() — SRE-console chat, streaming via SSE.
 diagnose()         — incident diagnosis, structured JSON output.
 
-Model: gemini-2.0-flash (fast) — switch to gemini-2.5-flash/pro for richer reasoning.
+Set GEMINI_API_KEY in backend/.env to enable live Gemini calls.
+Scripted fallbacks apply only when the key is missing.
 """
 import os
 import json
-from google import genai
-from google.genai import types
 from kg import retrieve_similar
 
-MODEL = "gemini-2.0-flash"       # gemini-2.5-flash · gemini-2.5-pro for stronger reasoning
+MODEL = "gemini-flash-latest"   # gemini-3.5-flash · gemini-3.1-flash-lite for alternatives
 
-_client: genai.Client | None = None
+_client = None
 
 
-def _get_client() -> genai.Client:
+def use_scripted() -> bool:
+    """Live Gemini when GEMINI_API_KEY is set; scripted only without a key."""
+    key = (os.environ.get("GEMINI_API_KEY") or "").strip()
+    if not key or key.endswith("..."):
+        return True
+    flag = os.environ.get("USE_SCRIPTED_AGENT", "").lower()
+    return flag in ("1", "true", "yes")
+
+
+def _get_client():
     global _client
     if _client is None:
+        from google import genai
         key = os.environ.get("GEMINI_API_KEY")
         if not key:
             raise RuntimeError("GEMINI_API_KEY not set — add it to backend/.env")
         _client = genai.Client(api_key=key)
     return _client
 
-
-# ── Diagnosis ─────────────────────────────────────────────────────────────
 
 def _build_diagnose_prompt(node: dict, window: list[dict], gen: int, hits: list[dict]) -> str:
     recent = window[-12:] if len(window) >= 12 else window
@@ -67,14 +74,7 @@ JOB: {node['job']}
 {kg_block}
 AVAILABLE ACTIONS: ramp_fans | throttle_job | migrate_workload | drain_node | restart_node | escalate | no_action
 
-CRITICAL DIAGNOSTIC NOTE:
-  Fan failure: fan↓ sustained + temp↑ while util FALLS (thermal throttling — deceptive!).
-  CPU overload: util↑ sustained + temp↑, fan STABLE or rising.
-  Memory leak:  mem↑ monotonic + temp rising + util flat.
-
-{gen_hint}
-
-Return ONLY a JSON object — no markdown fences, no extra text:
+Return ONLY a JSON object:
 {{
   "diagnosis": "<root-cause, ≤12 words>",
   "action":    "<one action from the list>",
@@ -84,10 +84,7 @@ Return ONLY a JSON object — no markdown fences, no extra text:
 
 
 async def diagnose(node: dict, window: list[dict], gen: int) -> dict:
-    """
-    Call Gemini to diagnose a node.
-    Returns {diagnosis, action, conf, evidence}. Falls back to scripted on error.
-    """
+    """Structured diagnosis — scripted by default, Gemini when USE_SCRIPTED_AGENT=false."""
     fan_declining = node["fan"] < 50
     mem_high      = node["mem"] > 78
     sig = (f"temp↑/fan↓ @ {node['id']}"  if fan_declining else
@@ -95,25 +92,10 @@ async def diagnose(node: dict, window: list[dict], gen: int) -> dict:
            f"temp↑/util↑ @ {node['id']}")
 
     all_hits = retrieve_similar(sig, k=5)
-    # gen-0: only surface near-identical matches (> 0.8); gen-4+: full similarity
     hits = [h for h in all_hits if h["sim"] > 0.8] if gen < 4 else all_hits
 
-    prompt = _build_diagnose_prompt(node, window, gen, hits)
-
-    try:
-        client = _get_client()
-        response = await client.aio.models.generate_content(
-            model=MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",   # guaranteed JSON from Gemini
-                max_output_tokens=512,
-                temperature=0.2,
-            ),
-        )
-        result = json.loads(response.text)
-
-        # Append KG evidence note when corrections were retrieved
+    if use_scripted():
+        result = _fallback(node, gen)
         if hits and gen >= 4:
             top = hits[0]
             result.setdefault("evidence", []).append(
@@ -122,6 +104,27 @@ async def diagnose(node: dict, window: list[dict], gen: int) -> dict:
             )
         return result
 
+    prompt = _build_diagnose_prompt(node, window, gen, hits)
+    try:
+        from google.genai import types
+        client = _get_client()
+        response = await client.aio.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                max_output_tokens=512,
+                temperature=0.2,
+            ),
+        )
+        result = json.loads(response.text)
+        if hits and gen >= 4:
+            top = hits[0]
+            result.setdefault("evidence", []).append(
+                f"KG correction (sim={top['sim']}): {top['correction']['signature']} — "
+                f"rejected {top['correction']['rejected']}, applied {top['correction']['applied']}"
+            )
+        return result
     except Exception as exc:
         return _fallback(node, gen, str(exc))
 
@@ -130,7 +133,7 @@ def _fallback(node: dict, gen: int, reason: str = "") -> dict:
     """Scripted fallback — mirrors the in-browser buildSuggestion()."""
     fan_low  = node.get("fan", 60) < 45
     mem_high = node.get("mem", 40) > 80
-    note     = f" [Gemini fallback: {reason[:60]}]" if reason else ""
+    note     = f" [scripted: {reason[:60]}]" if reason else ""
 
     if gen >= 4:
         if fan_low:
@@ -168,20 +171,56 @@ def _fallback(node: dict, gen: int, reason: str = "") -> dict:
     }
 
 
-# ── SRE console chat (streaming) ───────────────────────────────────────────
+def _chat_fallback(text: str, context: dict) -> str:
+    """Port of frontend askAgent() — deterministic SRE console replies."""
+    node_id     = context.get("focusNode", "unknown")
+    incident    = context.get("incident")
+    node        = context.get("node", {})
+    corrections = context.get("corrections", [])
+    gen         = context.get("gen", 0)
+    q           = text.lower().lstrip("/")
+
+    sig = (f"temp↑/{'fan↓' if incident and incident.get('faultType') == 'fan' else 'mem↑'} @ {node_id}"
+           if incident else "no active signature")
+
+    if "why" in q or "explain" in q:
+        if not incident:
+            return f"No active incident on {node_id}. Telemetry nominal — nothing to explain right now."
+        sug = incident.get("suggestion")
+        if sug:
+            kg_note = ("KG similarity retrieval surfaced a matching correction, so I ranked it above the seed prior."
+                       if gen >= 4 else "Running gen-0 prior — fan signal is under-weighted vs util.")
+            return (f"My call on {node_id}: {sug['diagnosis']} → {sug['action']} (conf {sug['conf']}).\n"
+                    f"Key signal: {sug['evidence'][0]}\n{kg_note}")
+        return f"Still analyzing {node_id} — I'll post a diagnosis in ~2 ticks."
+
+    if "history" in q or "kg" in q or "correction" in q:
+        if corrections:
+            last = corrections[-1]
+            return (f"KG holds {len(corrections)} correction(s). Most recent: rejected {last.get('rejected')} "
+                    f"→ applied {last.get('applied')}. Signature match: {sig}.")
+        return f"KG has no operator corrections yet for {sig}. Override an incident to teach me."
+
+    if "status" in q or "health" in q or "fleet" in q:
+        temp = node.get("temp")
+        temp_s = f"{temp:.1f}°C" if isinstance(temp, (int, float)) else "n/a"
+        inc_s = f"Active incident stage: {incident['stage']}." if incident else "No incident on focused node."
+        return f"Fleet: {node_id} at {temp_s}. {inc_s} Ask /diagnose to re-run, or \"/\" for actions."
+
+    if "what" in q and "do" in q:
+        return ("You can Accept/Override the suggestion in the incident panel, or drive me from here — "
+                "/ramp_fans, /throttle, /migrate, /drain, /restart, /borg, /escalate. Type \"/\" to see the palette.")
+
+    return (f"Focused on {node_id} (sig: {sig}). I can /diagnose, /explain, show /history, "
+            "or queue a repair. Type \"/\" for the action palette.")
+
 
 async def ask_agent_stream(text: str, context: dict):
-    """
-    Async generator — streams SRE-console reply token-by-token via Gemini.
+    """Async generator — scripted by default, Gemini when USE_SCRIPTED_AGENT=false."""
+    if use_scripted():
+        yield _chat_fallback(text, context)
+        return
 
-    context keys: focusNode, incident, node, corrections, gen
-
-    ── HOW TO SWITCH MODEL ────────────────────────────────────────────────
-    Change the MODULE-LEVEL `MODEL` constant above.
-    gemini-2.0-flash   → fast, low latency (default)
-    gemini-2.5-flash   → better reasoning, slightly slower
-    gemini-2.5-pro     → best quality, for complex diagnoses
-    """
     node_id     = context.get("focusNode", "unknown")
     incident    = context.get("incident")
     node        = context.get("node", {})
@@ -209,14 +248,11 @@ async def ask_agent_stream(text: str, context: dict):
         f"State: temp={node.get('temp','?')}°C  util={node.get('util','?')}%  "
         f"fan={node.get('fan','?')}%  mem={node.get('mem','?')}%"
         f"{inc_ctx}{kg_ctx}\n\n"
-        "Rules:\n"
-        "- Be concise (≤4 sentences). Ground answers in the current node state.\n"
-        "- For action commands, confirm what was queued and its expected metric effect.\n"
-        "- For questions (/explain, /history, /status), give a direct factual answer.\n"
-        "- Never hallucinate telemetry values — if uncertain, say so."
+        "Be concise (≤4 sentences). Ground answers in the current node state."
     )
 
     try:
+        from google.genai import types
         client = _get_client()
         async for chunk in await client.aio.models.generate_content_stream(
             model=MODEL,
@@ -229,6 +265,5 @@ async def ask_agent_stream(text: str, context: dict):
         ):
             if chunk.text:
                 yield chunk.text
-
     except Exception as exc:
-        yield f"[Agent error: {exc}. Check GEMINI_API_KEY and model availability.]"
+        yield f"[Gemini error: {exc}. Check GEMINI_API_KEY and model availability.]"

@@ -1,17 +1,17 @@
 """
-InfraBrain backend — FastAPI + WebSocket + Anthropic
+InfraBrain backend — FastAPI + WebSocket + scripted agent (Gemini optional)
 
 Architecture:
   WS  /api/stream  — bidirectional: server pushes ticks/incidents, client sends actions
-  SSE /api/chat    — streaming SRE console responses
+  SSE /api/chat    — streaming SRE console responses (scripted by default)
   GET /api/kg      — knowledge graph snapshot
   GET /api/metrics — live metrics (override_rate, composite, mttr, hit_rate)
   POST/api/meta    — run meta-agent on latest traces
 
 Run:
   pip install -r requirements.txt
-  cp .env.example .env   # add your GEMINI_API_KEY
-  python main.py         # or: uvicorn main:app --reload --port 8002
+  cp .env.example .env   # paste GEMINI_API_KEY
+  python main.py         # live Gemini when key is set
 """
 
 import asyncio
@@ -31,6 +31,7 @@ from pydantic import BaseModel
 import kg as kgdb
 from agent import ask_agent_stream, diagnose, _fallback
 from meta_agent import run as run_meta_agent
+from metrics import compute_metrics
 from simulator import FAULTS, FAULT_NODE, fresh_nodes, step_nodes
 
 load_dotenv()
@@ -178,7 +179,9 @@ async def _sim_tick():
             inc["stage"] = "resolved"
             remove_repairs.add(rep["taskId"])
             sim.episodes += 1
+            _record_trace(inc, "resolved", mttr=float(t - (inc.get("since") or t)))
             await broadcast({"type": "incident_update", "incident": inc})
+            await broadcast({"type": "episodes", "episodes": sim.episodes})
 
         # Scripted auto-override: fix ineffective (hero scenario gen-0 only)
         elif (nd["temp"] >= 92 and inc["node"] == FAULT_NODE
@@ -191,7 +194,9 @@ async def _sim_tick():
             await _log("op",
                 f"Override: rejected {bad_action}, applying ramp_fans. Correction → KG.",
                 inc["node"])
-            _write_correction(bad_action, "ramp_fans", inc["node"])
+            corr, _ = _write_correction(bad_action, "ramp_fans", inc["node"])
+            _record_trace(inc, "override", sre_action="ramp_fans")
+            await _broadcast_kg(corr)
             remove_repairs.add(rep["taskId"])
             new_rep = _make_repair(inc["node"], "ramp_fans", prefix=7000)
             sim.repairs.append(new_rep)
@@ -209,6 +214,7 @@ async def _sim_tick():
         "nodes":     sim.nodes,
         "incidents": sim.incidents,
         "repairs":   sim.repairs,
+        "episodes":  sim.episodes,
     })
 
 
@@ -271,13 +277,43 @@ def _write_correction(rejected: str, applied: str, node: str):
         "source":    "operator_override",
     }
     kgdb.add_correction(corr)
-    kgdb.add_pair({
+    pair = {
         "ctx":      f"sig: {sig} t{sim.t:03d}",
         "rejected": rejected,
         "chosen":   applied,
         "source":   "operator_override",
+    }
+    kgdb.add_pair(pair)
+    return corr, pair
+
+
+def _record_trace(inc: dict, outcome: str, sre_action: str | None = None, mttr: float | None = None):
+    sug = inc.get("suggestion") or {}
+    trace = {
+        "episode":   sim.episodes,
+        "t":         sim.t,
+        "node":      inc["node"],
+        "faultType": inc["faultType"],
+        "diagnosis": sug.get("diagnosis"),
+        "suggested": sug.get("action"),
+        "sreAction": sre_action or sug.get("action"),
+        "outcome":   outcome,
+        "composite": 0.55 if outcome == "override" else 0.72,
+        "mttr":      mttr,
+    }
+    sim.traces.append(trace)
+    kgdb.add_trace(trace)
+    return trace
+
+
+async def _broadcast_kg(corr: dict):
+    pairs = kgdb.get_pairs()
+    await broadcast({
+        "type":           "kg_update",
+        "correction":     corr,
+        "pair":           pairs[-1] if pairs else None,
+        "allCorrections": kgdb.get_corrections(),
     })
-    return corr
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -377,6 +413,7 @@ async def _handle_ws(msg: dict, ws: WebSocket):
                 f"SRE ACCEPTED {sug['action']}. Repair task {rep['taskId']} queued on {inc['node']}.",
                 inc["node"])
             inc["stage"] = "repairing"
+            _record_trace(inc, "accepted", sre_action=sug["action"])
             await broadcast({"type": "incident_update", "incident": inc})
             await broadcast({"type": "repairs", "repairs": sim.repairs})
 
@@ -390,32 +427,15 @@ async def _handle_ws(msg: dict, ws: WebSocket):
             await _log("op",
                 f"SRE OVERRIDE: rejected {sug['action']}, applying {new_action}. Correction → KG.",
                 inc["node"])
-            corr = _write_correction(sug["action"], new_action, inc["node"])
+            corr, _ = _write_correction(sug["action"], new_action, inc["node"])
             rep  = _make_repair(inc["node"], new_action, prefix=5000)
             sim.repairs.append(rep)
             inc["stage"]      = "repairing"
             inc["suggestion"] = {**sug, "overridden": True, "chosenAction": new_action}
-            # Archive trace
-            sim.traces.append({
-                "episode":   sim.episodes,
-                "t":         sim.t,
-                "node":      inc["node"],
-                "faultType": inc["faultType"],
-                "diagnosis": sug.get("diagnosis"),
-                "suggested": sug.get("action"),
-                "sreAction": new_action,
-                "outcome":   "override",
-                "composite": 0.55,
-            })
-            kgdb.add_trace(sim.traces[-1])
+            _record_trace(inc, "override", sre_action=new_action)
             await broadcast({"type": "incident_update", "incident": inc})
             await broadcast({"type": "repairs",          "repairs":  sim.repairs})
-            await broadcast({
-                "type":       "kg_update",
-                "correction": corr,
-                "pair":       kgdb.get_pairs()[-1] if kgdb.get_pairs() else None,
-                "allCorrections": kgdb.get_corrections(),
-            })
+            await _broadcast_kg(corr)
 
     # ── SRE: escalate ─────────────────────────────────────────────────
     elif action == "escalate":
@@ -449,6 +469,16 @@ async def _handle_ws(msg: dict, ws: WebSocket):
             inc["stage"] = "repairing"
             await broadcast({"type": "incident_update", "incident": inc})
         await broadcast({"type": "repairs", "repairs": sim.repairs})
+
+    # ── SRE: re-run diagnosis ─────────────────────────────────────────
+    elif action == "rediagnose":
+        inc_id = msg.get("incidentId")
+        inc = next((i for i in sim.incidents if i["id"] == inc_id), None)
+        if inc and inc["stage"] in ("analyzing", "suggested"):
+            inc["stage"] = "analyzing"
+            inc["suggestion"] = None
+            await broadcast({"type": "incident_update", "incident": inc})
+            asyncio.create_task(_run_diagnosis(inc))
 
 
 # ── SSE: streaming SRE chat ───────────────────────────────────────────────
@@ -500,28 +530,39 @@ async def get_kg():
     }
 
 
+@app.get("/api/kg/retrieve")
+async def kg_retrieve(sig: str, k: int = 5):
+    hits = kgdb.retrieve_similar(sig, k=k)
+    return {
+        "signature": sig,
+        "hits": [
+            {
+                "sig":      h["correction"]["signature"],
+                "sim":      h["sim"],
+                "kind":     "correction",
+                "rejected": h["correction"]["rejected"],
+                "applied":  h["correction"]["applied"],
+                "note":     f"{'exact-family match' if h['sim'] >= 0.9 else 'near-miss, same fault type'} — ranked #{i+1}",
+            }
+            for i, h in enumerate(hits)
+        ],
+    }
+
+
+@app.get("/api/pairs")
+async def get_pairs():
+    return {"pairs": kgdb.get_pairs()}
+
+
 # ── REST: live metrics ───────────────────────────────────────────────────
 
 @app.get("/api/metrics")
 async def get_metrics():
     traces      = kgdb.get_traces(limit=200)
-    total       = len(traces)
-    overrides   = sum(1 for t in traces if t.get("outcome") == "override")
     corrections = kgdb.get_corrections()
-    hit_rate    = min(0.98, 0.62 + len(corrections) * 0.05)
-    gen         = sim.agentGen
-    composite   = 0.61 if gen >= 4 else max(0.28, 0.28 + gen * 0.08)
-    mttr        = 3.1  if gen >= 4 else 6.8
-    return {
-        "overrideRate":      round(overrides / total, 3) if total else 0,
-        "mttr":              mttr,
-        "hitRate":           hit_rate,
-        "composite":         composite,
-        "correctionsCount":  len(corrections),
-        "pairsCount":        len(kgdb.get_pairs()),
-        "episodes":          sim.episodes,
-        "agentGen":          gen,
-    }
+    metrics     = compute_metrics(traces, corrections, sim.agentGen, sim.episodes)
+    metrics["pairsCount"] = len(kgdb.get_pairs())
+    return metrics
 
 
 # ── REST: meta-agent ────────────────────────────────────────────────────

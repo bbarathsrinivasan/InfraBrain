@@ -47,10 +47,21 @@ def init_db():
             sre_action  TEXT,
             outcome     TEXT,
             composite   REAL,
+            mttr        REAL,
             created_at  REAL
         );
     """)
     conn.commit()
+    conn.close()
+    _migrate_traces_mttr()
+
+
+def _migrate_traces_mttr():
+    conn = sqlite3.connect(DB_PATH)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(traces)").fetchall()}
+    if "mttr" not in cols:
+        conn.execute("ALTER TABLE traces ADD COLUMN mttr REAL")
+        conn.commit()
     conn.close()
 
 
@@ -134,11 +145,11 @@ def get_pairs() -> List[dict]:
 def add_trace(trace: dict):
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
-        "INSERT INTO traces(episode,t,node,fault_type,diagnosis,suggested,sre_action,outcome,composite,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO traces(episode,t,node,fault_type,diagnosis,suggested,sre_action,outcome,composite,mttr,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (trace.get("episode"), trace.get("t"), trace.get("node"), trace.get("faultType"),
          trace.get("diagnosis"), trace.get("suggested"), trace.get("sreAction"),
-         trace.get("outcome"), trace.get("composite", 0.0), time.time())
+         trace.get("outcome"), trace.get("composite", 0.0), trace.get("mttr"), time.time())
     )
     conn.commit(); conn.close()
 
@@ -146,9 +157,9 @@ def add_trace(trace: dict):
 def get_traces(limit: int = 50) -> List[dict]:
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT id,episode,t,node,fault_type,diagnosis,suggested,sre_action,outcome,composite "
+        "SELECT id,episode,t,node,fault_type,diagnosis,suggested,sre_action,outcome,composite,mttr "
         "FROM traces ORDER BY id DESC LIMIT ?", (limit,)
     ).fetchall()
     conn.close()
-    keys = ["id","episode","t","node","faultType","diagnosis","suggested","sreAction","outcome","composite"]
+    keys = ["id","episode","t","node","faultType","diagnosis","suggested","sreAction","outcome","composite","mttr"]
     return [dict(zip(keys, r)) for r in rows]

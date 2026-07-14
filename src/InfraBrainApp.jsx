@@ -267,14 +267,14 @@ function HealthStat({label, value, color=T.text}) {
     <span style={{fontFamily:MONO,fontSize:9.5,color:T.faint,letterSpacing:1}}>{label}</span>
   </div>;
 }
-function FleetHealthStrip({nodes, incidents, repairs, agentGen}) {
+function FleetHealthStrip({nodes, incidents, repairs, mttr}) {
   const ok  = nodes.filter(n=>n.status==="ok").length;
   const wn  = nodes.filter(n=>n.status==="warn").length;
   const cr  = nodes.filter(n=>n.status==="crit").length;
   const active = incidents.filter(i=>i.stage!=="resolved").length;
   const inFlight = repairs.length;
   const hottest = nodes.reduce((a,b)=>b.temp>a.temp?b:a, nodes[0]);
-  const mttr = agentGen>=4 ? "3.1" : "6.8";
+  const mttrVal = typeof mttr === "number" ? mttr.toFixed(1) : (mttr || "6.8");
   return <Panel style={{padding:"10px 14px"}}>
     <div style={{display:"flex",alignItems:"center",gap:22,flexWrap:"wrap"}}>
       <HealthStat label="HEALTHY" value={ok} color={T.ok}/>
@@ -283,7 +283,7 @@ function FleetHealthStrip({nodes, incidents, repairs, agentGen}) {
       <div style={{width:1,height:34,background:T.line}}/>
       <HealthStat label="ACTIVE INCIDENTS" value={active} color={active?T.crit:T.muted}/>
       <HealthStat label="RT JOBS IN FLIGHT" value={inFlight} color={inFlight?T.agent:T.muted}/>
-      <HealthStat label="MTTR (ticks)" value={mttr} color={T.text}/>
+      <HealthStat label="MTTR (ticks)" value={mttrVal} color={T.text}/>
       <div style={{flex:1}}/>
       <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,textAlign:"right"}}>
         <div>hottest node</div>
@@ -578,7 +578,7 @@ function ObservabilityTab(p) {
   const focusIncident = p.incidents.find(i=>i.node===p.focusNode && i.stage!=="resolved")
                      || p.incidents.find(i=>i.node===p.focusNode);
   return <div style={{display:"flex",flexDirection:"column",gap:12}}>
-    <FleetHealthStrip nodes={p.nodes} incidents={p.incidents} repairs={p.repairs} agentGen={p.agentGen}/>
+    <FleetHealthStrip nodes={p.nodes} incidents={p.incidents} repairs={p.repairs} mttr={p.mttr}/>
     <FocusSwitcher incidents={p.incidents} focusNode={p.focusNode} onFocus={p.onSelect}/>
     <div style={{display:"grid",gridTemplateColumns:"300px 1fr 360px",gap:12,alignItems:"start"}}>
       <div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -637,11 +637,12 @@ function ScenarioFamilyPanel() {
 }
 
 /* ── LEARNING: COMPOSITE REWARD BREAKDOWN ────────────────────────────── */
-function RewardPanel() {
-  const composite = REWARD_TERMS.reduce((s,t)=>s+t.w*t.val,0);
+function RewardPanel({terms}) {
+  const rewardTerms = terms || REWARD_TERMS;
+  const composite = rewardTerms.reduce((s,t)=>s+t.w*t.val,0);
   return <Panel title="Composite reward decomposition"
     sub="the scalar the meta-agent optimizes · same reward becomes the GRPO signal later">
-    {REWARD_TERMS.map(t => <MeterRow key={t.term} label={`${t.term}  (w ${t.w})`}
+    {rewardTerms.map(t => <MeterRow key={t.term} label={`${t.term}  (w ${t.w})`}
       value={t.val} color={t.term.includes("safety")?T.crit:t.term.includes("override")?T.kg:t.term.includes("MTTR")?T.agent:T.ok}
       right={t.val.toFixed(2)}/>)}
     <div style={{borderTop:`1px solid ${T.line}`,marginTop:6,paddingTop:8,
@@ -677,19 +678,24 @@ function ArchivePanel() {
 }
 
 /* ── LEARNING LAB TAB ────────────────────────────────────────────────── */
-function LearningTab() {
+function LearningTab({metrics, metaResult, onRunMeta, metaLoading}) {
   const [showDiff,setShowDiff] = useState(false);
+  const overrideData = metrics?.overrideTrend || OVERRIDE_DATA;
+  const genData = metrics?.genScores || GEN_DATA;
+  const metaDiff = metaResult?.diff || META_DIFF;
   const tk = {fill:T.faint, fontSize:9};
   const tt = {contentStyle:{background:T.soft,border:`1px solid ${T.line}`,fontSize:11}};
   return <div style={{display:"flex",flexDirection:"column",gap:12}}>
     <div style={{fontFamily:MONO,fontSize:10,color:T.faint,letterSpacing:2}}>
       LEARNING PLANE — OFFLINE · SANDBOXED · ALL METRICS ON HELD-OUT SCENARIOS
+      {metrics && <span style={{color:T.ok,marginLeft:12}}>● live from backend</span>}
     </div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
       <Panel title="Override rate ↓ — KG institutional memory"
-        sub="headline metric · falls as KG corrections accumulate · same scenario family, new seeds">
+        sub={`headline metric · current ${((metrics?.overrideRate||0)*100).toFixed(0)}% override rate`}
+        right={metrics && <Chip label="hit-rate" value={`${((metrics.hitRate||0)*100).toFixed(0)}%`} color={T.agent}/>}>
         <ResponsiveContainer width="100%" height={200}>
-          <LineChart data={OVERRIDE_DATA} margin={{top:8,right:12,bottom:8,left:-18}}>
+          <LineChart data={overrideData} margin={{top:8,right:12,bottom:8,left:-18}}>
             <XAxis dataKey="ep" tick={tk} stroke={T.line}/>
             <YAxis tick={tk} stroke={T.line} unit="%"/>
             <Tooltip {...tt}/>
@@ -703,7 +709,7 @@ function LearningTab() {
       <Panel title="Composite score ↑ — meta-agent evolution"
         sub="train vs held-out · split by scenario family · held-out proves generalization not memorisation">
         <ResponsiveContainer width="100%" height={200}>
-          <LineChart data={GEN_DATA} margin={{top:8,right:12,bottom:8,left:-18}}>
+          <LineChart data={genData} margin={{top:8,right:12,bottom:8,left:-18}}>
             <XAxis dataKey="gen" tick={tk} stroke={T.line}/>
             <YAxis tick={tk} stroke={T.line} domain={[0,.85]}/>
             <Tooltip {...tt}/>
@@ -719,24 +725,27 @@ function LearningTab() {
           <Btn color={T.agent} onClick={()=>setShowDiff(s=>!s)}>
             {showDiff?"Hide":"Show"} gen-3→4 diff
           </Btn>
+          {onRunMeta && <Btn color={T.kg} onClick={onRunMeta} disabled={metaLoading}>
+            {metaLoading?"Running…":"Run meta-agent"}
+          </Btn>}
         </div>
       </Panel>
     </div>
     {showDiff && <Panel title="Gen-3 → gen-4: what the meta agent wrote"
-      sub="machine-generated · one diff per generation · kept only if held-out score improved">
+      sub={metaResult?.explanation || "machine-generated · one diff per generation · kept only if held-out score improved"}>
       <pre style={{fontFamily:MONO,fontSize:11,lineHeight:1.6,background:"#0A0D11",
         border:`1px solid ${T.line}`,borderRadius:6,padding:12,overflowX:"auto"}}>
-        {META_DIFF.split("\n").map((l,i)=><div key={i} style={{
+        {metaDiff.split("\n").map((l,i)=><div key={i} style={{
           color:l.startsWith("+")?T.ok:l.startsWith("-")?T.crit:l.startsWith("@")?T.agent:T.muted
         }}>{l}</div>)}
       </pre>
-      <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,marginTop:6}}>
-        Meta agent identified exact-label KG lookups missing near-miss signatures. Rewrote retrieval and ranked corrections above seed knowledge. Held-out jumped 0.55 → 0.61.
-      </div>
+      {metaResult && <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,marginTop:6}}>
+        Projected held-out improvement: +{metaResult.projectedImprovement?.toFixed(2) || "0.06"} → gen-{metaResult.newGen}
+      </div>}
     </Panel>}
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
       <ScenarioFamilyPanel/>
-      <RewardPanel/>
+      <RewardPanel terms={metrics?.rewardTerms}/>
     </div>
     <ArchivePanel/>
     <Panel title="Future work — DPO / GRPO" sub="preference pairs accumulate every episode · architecture is ready" dashed>
@@ -750,12 +759,14 @@ function LearningTab() {
 }
 
 /* ── KG: RETRIEVAL TRACE ─────────────────────────────────────────────── */
-function RetrievalTracePanel() {
+function RetrievalTracePanel({hits, signature}) {
+  const rows = hits?.length ? hits : RETRIEVAL_TRACE;
+  const sig = signature || "temp↑/fan↓ @ R2-N5";
   return <Panel title="Retrieval trace — gen-4 similarity lookup"
-    sub="query: sig temp↑/fan↓ @ R2-N5 · top-k by cosine · corrections ranked above seeds">
+    sub={`query: sig ${sig} · top-k by Jaccard · corrections ranked above seeds`}>
     <div style={{fontFamily:MONO,fontSize:10.5}}>
-      {RETRIEVAL_TRACE.map((r,i)=>{
-        const isCorr=r.kind==="correction";
+      {rows.map((r,i)=>{
+        const isCorr=(r.kind||"correction")==="correction";
         return <div key={i} style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,
           borderLeft:`2px solid ${isCorr?T.kg:T.line}`,paddingLeft:8}}>
           <span style={{color:isCorr?T.kg:T.muted,width:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.sig}</span>
@@ -773,12 +784,12 @@ function RetrievalTracePanel() {
 }
 
 /* ── KG: STATS ───────────────────────────────────────────────────────── */
-function KGStatsPanel({corrections}) {
+function KGStatsPanel({corrections, hitRate}) {
   const counts = {symptom:KG_NODES.filter(n=>n.kind==="symptom").length,
     cause:KG_NODES.filter(n=>n.kind==="cause").length,
     action:KG_NODES.filter(n=>n.kind==="action").length,
     correction:corrections.length};
-  const hitRate = Math.min(0.98, 0.62 + corrections.length*0.05);
+  const rate = hitRate ?? Math.min(0.98, 0.62 + corrections.length*0.05);
   return <Panel title="KG stats">
     <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:10}}>
       {[["symptoms",counts.symptom,T.warn],["causes",counts.cause,T.crit],
@@ -788,7 +799,7 @@ function KGStatsPanel({corrections}) {
           <span style={{fontFamily:MONO,fontSize:9,color:T.faint,letterSpacing:1}}>{l}</span>
         </div>)}
     </div>
-    <MeterRow label="retrieval hit-rate (matching sig found)" value={hitRate} color={T.agent} right={(hitRate*100).toFixed(0)+"%"}/>
+    <MeterRow label="retrieval hit-rate (matching sig found)" value={rate} color={T.agent} right={(rate*100).toFixed(0)+"%"}/>
     <div style={{fontFamily:MONO,fontSize:10,color:T.faint,marginTop:2}}>
       Hit-rate climbs with each correction — more institutional memory, fewer repeat misdiagnoses.
     </div>
@@ -796,8 +807,9 @@ function KGStatsPanel({corrections}) {
 }
 
 /* ── KNOWLEDGE GRAPH TAB ─────────────────────────────────────────────── */
-function KnowledgeGraphTab({corrections}) {
+function KnowledgeGraphTab({corrections, retrievalHits, focusNode, hitRate}) {
   const [sel,setSel] = useState(null);
+  const sig = `temp↑/fan↓ @ ${focusNode || "R2-N5"}`;
   const kindColor = {symptom:T.warn, cause:T.crit, action:T.ok, correction:T.kg};
   const kindLabel = {symptom:"Symptom", cause:"Root cause", action:"Remediation", correction:"Operator correction"};
   const allNodes = [...KG_NODES, ...corrections];
@@ -832,10 +844,10 @@ function KnowledgeGraphTab({corrections}) {
         {Object.entries(kindLabel).map(([k,l])=><span key={k}><Dot color={kindColor[k]}/>{l}</span>)}
       </div>
     </Panel>
-    <RetrievalTracePanel/>
+    <RetrievalTracePanel hits={retrievalHits} signature={sig}/>
     </div>
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
-      <KGStatsPanel corrections={corrections}/>
+      <KGStatsPanel corrections={corrections} hitRate={hitRate ?? (retrievalHits?.length ? Math.min(0.98, 0.62 + corrections.length*0.05) : undefined)}/>
       <Panel title="Node detail" sub={selNode?selNode.label:"click a node"}>
         {!selNode && <div style={{fontFamily:MONO,fontSize:11,color:T.faint}}>
           Amber nodes are operator corrections — each one is a lesson the system learned from human disagreement.
@@ -910,8 +922,8 @@ function DataSourcesPanel() {
 }
 
 /* ── TRAINING DATA TAB ───────────────────────────────────────────────── */
-function TrainingDataTab({pairs}) {
-  const PRIOR=237, total=PRIOR+pairs.length;
+function TrainingDataTab({pairs, priorCount=237}) {
+  const PRIOR=priorCount, total=PRIOR+pairs.length;
   const SCHEMA=`{\n  "id":       1,\n  "context":  "sig: temp↑/fan↓ @ R2-N5 t042",\n  "rejected": "throttle_job",\n  "chosen":   "ramp_fans",\n  "source":   "operator_override"\n}`;
   const PHASES = [
     {n:"01",title:"Shadow mode",color:T.agent,
@@ -971,7 +983,7 @@ function TrainingDataTab({pairs}) {
 /* ── AGENT RESPONSE (scripted now · swap in a real LLM later) ─────────── */
 /*
  * To wire a real model later, replace the body of askAgent with an async
- * fetch to your backend / Anthropic API and return the completion string.
+ * fetch to your backend / Gemini API and return the completion string.
  * Keep the signature (ctx) so callers don't change.
  */
 function askAgent(ctx) {
@@ -1021,6 +1033,10 @@ export default function InfraBrainApp() {
   const [chat,setChat] = useState([{role:"sys",text:'SRE console ready. Ask a question, or type "/" for actions.'}]);
   const [log,setLog] = useState([{t:0,kind:"sys",text:"Simulator ready. Press RUN — faults fire at t010 (R2-N5 fan) and t022 (R3-N2 mem)."}]);
   const [backendStatus, setBackendStatus] = useState(BACKEND_WS?"connecting":"demo");
+  const [liveMetrics, setLiveMetrics]     = useState(null);
+  const [retrievalHits, setRetrievalHits] = useState(null);
+  const [metaResult, setMetaResult]       = useState(null);
+  const [metaLoading, setMetaLoading]     = useState(false);
 
   const histRef  = useRef({});
   const stRef    = useRef({});
@@ -1053,6 +1069,36 @@ export default function InfraBrainApp() {
     return () => { wsRef.current?.close(); clearTimeout(retryTimer); };
   }, []); // eslint-disable-line
 
+  /* ── Poll live metrics + KG retrieval when backend connected ─────────── */
+  useEffect(()=>{
+    if (backendStatus !== "connected" || !BACKEND_HTTP) return;
+    let cancelled = false;
+
+    async function refreshMetrics(){
+      try {
+        const r = await fetch(`${BACKEND_HTTP}/api/metrics`);
+        if (r.ok && !cancelled) setLiveMetrics(await r.json());
+      } catch {}
+    }
+    refreshMetrics();
+    const id = setInterval(refreshMetrics, 4000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [backendStatus]);
+
+  useEffect(()=>{
+    if (backendStatus !== "connected" || !BACKEND_HTTP) return;
+    const inc = stRef.current.incidents.find(i=>i.node===focusNode && i.stage!=="resolved");
+    const sig = inc
+      ? `temp↑/${inc.faultType==="fan"?"fan↓":"mem↑"} @ ${focusNode}`
+      : `temp↑/fan↓ @ ${focusNode}`;
+    let cancelled = false;
+    fetch(`${BACKEND_HTTP}/api/kg/retrieve?sig=${encodeURIComponent(sig)}&k=4`)
+      .then(r=>r.ok ? r.json() : null)
+      .then(d=>{ if (!cancelled && d?.hits) setRetrievalHits(d.hits); })
+      .catch(()=>{});
+    return () => { cancelled = true; };
+  }, [backendStatus, focusNode, kgCorr.length]);
+
   function sendWS(msg){
     if (wsRef.current?.readyState === WebSocket.OPEN){
       wsRef.current.send(JSON.stringify(msg));
@@ -1079,6 +1125,7 @@ export default function InfraBrainApp() {
         setNodes(msg.nodes||[]);
         setTick(msg.t||0);
         if(msg.incidents) setIncidents(msg.incidents);
+        if(msg.episodes !== undefined) setEpisodes(msg.episodes);
         // hydrate history for telemetry charts
         (msg.nodes||[]).forEach(nd=>{
           const h=(histRef.current[nd.id]||=[]);
@@ -1127,6 +1174,9 @@ export default function InfraBrainApp() {
         break;
       case "running":
         setRunning(!!msg.running);
+        break;
+      case "episodes":
+        if(msg.episodes !== undefined) setEpisodes(msg.episodes);
         break;
       case "escalation":
         addChat("sys",`⚑ ${msg.message||"Escalated to on-call (L2)."}`);
@@ -1359,13 +1409,15 @@ export default function InfraBrainApp() {
       if(spec.kind==="escalate"){ escalate(incident||{node}); return; }
       if(cmd==="/diagnose"){
         if(!incident){ addChat("agent",`No active incident on ${node}. Telemetry nominal.`); return; }
-        if(!backendConnected){
-          const sug=buildSuggestion(S.nodes,S.agentGen,incident.faultType,node);
-          updateIncident(node,{stage:"suggested",suggestion:sug});
-          addChat("agent",`Re-diagnosed ${node}: ${sug.diagnosis} → ${sug.action} (conf ${sug.conf}).`);
+        if(backendConnected){
+          sendWS({type:"rediagnose", incidentId:incident.id});
+          addChat("agent",`Re-running diagnosis on ${node}…`);
           return;
         }
-        // Fall through to LLM stream with /diagnose as the question
+        const sug=buildSuggestion(S.nodes,S.agentGen,incident.faultType,node);
+        updateIncident(node,{stage:"suggested",suggestion:sug});
+        addChat("agent",`Re-diagnosed ${node}: ${sug.diagnosis} → ${sug.action} (conf ${sug.conf}).`);
+        return;
       }
     }
 
@@ -1422,6 +1474,17 @@ export default function InfraBrainApp() {
   const statusColor = {connected:T.ok, error:T.crit, reconnecting:T.warn, connecting:T.warn, demo:T.faint};
   const statusLabel = {connected:"backend ●", error:"backend ✕", reconnecting:"reconnecting…", connecting:"connecting…", demo:"demo mode"};
 
+  function handleRunMeta(){
+    if (!BACKEND_HTTP) return;
+    setMetaLoading(true);
+    fetch(`${BACKEND_HTTP}/api/meta`, {method:"POST"})
+      .then(r=>r.json())
+      .then(d=>{ setMetaResult(d); setMetaLoading(false); })
+      .catch(()=>setMetaLoading(false));
+  }
+
+  const mttr = liveMetrics?.mttr ?? (agentGen >= 4 ? 3.1 : 6.8);
+
   function handleRun(){
     if(backendConnected){
       sendWS({type:"set_running",running:!running});
@@ -1450,12 +1513,14 @@ export default function InfraBrainApp() {
         <TabBar active={tab} onSelect={setTab}/>
       </div>
       {tab==="Observability"  && <ObservabilityTab nodes={nodes} focusNode={focusNode} onSelect={setFocusNode}
-        history={histRef.current} incidents={incidents} agentGen={agentGen} repairs={repairs}
+        history={histRef.current} incidents={incidents} agentGen={agentGen} repairs={repairs} mttr={mttr}
         onAccept={accept} onOverride={override} onEscalate={escalate}
         onCancelRepair={cancelRepair} log={log} chat={chat} onChat={handleChat}/>}
-      {tab==="Learning Lab"   && <LearningTab/>}
-      {tab==="Knowledge Graph"&& <KnowledgeGraphTab corrections={kgCorr}/>}
-      {tab==="Training Data"  && <TrainingDataTab pairs={pairs}/>}
+      {tab==="Learning Lab"   && <LearningTab metrics={liveMetrics} metaResult={metaResult}
+        onRunMeta={backendConnected ? handleRunMeta : null} metaLoading={metaLoading}/>}
+      {tab==="Knowledge Graph"&& <KnowledgeGraphTab corrections={kgCorr} retrievalHits={retrievalHits}
+        focusNode={focusNode} hitRate={liveMetrics?.hitRate}/>}
+      {tab==="Training Data"  && <TrainingDataTab pairs={pairs} priorCount={237}/>}
       <div style={{marginTop:14,fontFamily:MONO,fontSize:10,color:T.faint}}>
         INFRABRAIN · suggest-only: nothing runs without SRE approval · self-modification sandboxed to simulator
       </div>

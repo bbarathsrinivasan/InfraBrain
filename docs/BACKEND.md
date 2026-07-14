@@ -10,7 +10,7 @@ The current repo is **frontend-only**: the simulator, the "agent," the KG, and a
 |-------|------------------|---------------------|
 | Fault simulator | `stepNodes()` in-browser, 650 ms tick | Python sim service, authoritative clock, streams telemetry |
 | Watcher | inline `temp>=75` check | statistical anomaly detector (z-score / EWMA) as a service |
-| Task agent | `buildSuggestion()` scripted | LLM call (Anthropic API) with KG-augmented prompt |
+| Task agent | `buildSuggestion()` scripted | LLM call (Gemini API) with KG-augmented prompt |
 | Knowledge graph | `kgCorr` array in React state | graph store (SQLite/Postgres + embeddings, or a graph DB) |
 | Meta-agent | static `META_DIFF` string | offline job that rewrites task-agent code from traces |
 | SRE chat | `askAgent()` scripted responder | same LLM endpoint, streaming |
@@ -45,7 +45,7 @@ Everything else (incident state machine, focus switcher, panels) can stay client
                                    └──────────────┘
 ```
 
-Suggested stack (matches the sibling `pact-business` project): **FastAPI** backend, **WebSocket** for live telemetry/incident push, **SQLite → Postgres** for the KG and trace store, **Anthropic API** for the task agent + SRE chat.
+Suggested stack (matches the sibling `pact-business` project): **FastAPI** backend, **WebSocket** for live telemetry/incident push, **SQLite → Postgres** for the KG and trace store, **Gemini API** for the task agent + SRE chat.
 
 ---
 
@@ -81,7 +81,7 @@ async def diagnose(node_id: str, gen: int):
     hits.sort(key=lambda h: (h.kind != "correction", h.age))
 
     prompt = build_prompt(window, hits, gen)               # meta-agent evolves this
-    resp   = await anthropic.messages.create(...)          # structured output
+    resp   = await gemini.generate_content(..., response_mime_type="application/json")
     return DiagnoseResult(diagnosis=..., action=..., conf=..., evidence=[...])
 ```
 
