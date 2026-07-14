@@ -312,9 +312,9 @@ function Chip({label, value, color=T.text}) {
     <span style={{color:T.faint}}>{label} </span><span style={{color}}>{value}</span>
   </div>;
 }
-function Panel({title, sub, children, dashed, style, right, fillHeight}) {
+function Panel({title, sub, children, dashed, style, right, fillHeight, compact}) {
   return <div style={{background:T.panel,border:`1px solid ${dashed?T.faint:T.line}`,
-    borderStyle:dashed?"dashed":"solid",borderRadius:10,padding:12,
+    borderStyle:dashed?"dashed":"solid",borderRadius:10,padding:compact?8:12,
     ...(fillHeight?{display:"flex",flexDirection:"column",minHeight:0}:{}),
     ...style}}>
     {(title||right) && <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:sub?2:0}}>
@@ -450,16 +450,16 @@ function FocusSwitcher({incidents, focusNode, onFocus}) {
 function RackGrid({nodes, selected, repairs, onSelect}) {
   const colOf = st => st==="crit"?T.crit:st==="warn"?T.warn:T.ok;
   const repairSet = new Set(repairs.filter(r=>!r.effectApplied).map(r=>r.node));
-  return <Panel title="Fleet — 4 racks × 8 nodes" sub="GPU training nodes · Alibaba trace-replay workload">
-    {[1,2,3,4].map(r => <div key={r} style={{marginBottom:8}}>
-      <div style={{fontFamily:MONO,fontSize:10,color:T.faint,marginBottom:3}}>RACK {r}</div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(8,1fr)",gap:4}}>
+  return <Panel title="Fleet — 4 racks × 8 nodes" sub="GPU training nodes · Alibaba trace-replay workload" compact>
+    {[1,2,3,4].map(r => <div key={r} style={{marginBottom:4}}>
+      <div style={{fontFamily:MONO,fontSize:9,color:T.faint,marginBottom:2}}>RACK {r}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(8,1fr)",gap:3}}>
         {nodes.filter(n=>n.id.startsWith(`R${r}-`)).map(n => {
           const col=colOf(n.status), isSel=n.id===selected;
           const repairing=repairSet.has(n.id);
           return <button key={n.id} onClick={()=>onSelect(n.id)}
             title={`${n.id} · ${n.temp.toFixed(1)}°C`}
-            style={{height:26,borderRadius:4,cursor:"pointer",position:"relative",
+            style={{height:20,borderRadius:3,cursor:"pointer",position:"relative",
               background:col+"22",border:`1px solid ${isSel?T.agent:col}`,
               outline:isSel?`1px solid ${T.agent}`:"none"}}>
             {repairing && <span style={{position:"absolute",top:-5,right:-3,fontSize:7,
@@ -504,9 +504,9 @@ function RepairQueue({repairs, onCancel, style, fillHeight}) {
 
 /* ── TELEMETRY ───────────────────────────────────────────────────────── */
 function Strip({data, dataKey, color, label, domain, refs=[]}) {
-  return <div style={{marginBottom:2}}>
-    <div style={{fontFamily:MONO,fontSize:9,color:T.faint,marginBottom:1}}>{label}</div>
-    <ResponsiveContainer width="100%" height={52}>
+  return <div style={{marginBottom:1}}>
+    <div style={{fontFamily:MONO,fontSize:8.5,color:T.faint,marginBottom:0}}>{label}</div>
+    <ResponsiveContainer width="100%" height={36}>
       <LineChart data={data} margin={{top:4,right:6,bottom:0,left:-26}}>
         <XAxis dataKey="t" hide/>
         <YAxis domain={domain} tick={{fill:T.faint,fontSize:9}} stroke={T.line}/>
@@ -521,7 +521,8 @@ function Telemetry({history, nodes, selected}) {
   const nd=nodes.find(n=>n.id===selected);
   const data=history[selected]||[];
   return <Panel title={`Telemetry — ${selected}`}
-    sub={nd?`${nd.temp.toFixed(1)}°C · util ${nd.util.toFixed(0)}% · fan ${nd.fan.toFixed(0)}% · mem ${nd.mem.toFixed(0)}% · ${nd.job}`:"select a node"}>
+    sub={nd?`${nd.temp.toFixed(1)}°C · util ${nd.util.toFixed(0)}% · fan ${nd.fan.toFixed(0)}% · mem ${nd.mem.toFixed(0)}% · ${nd.job}`:"select a node"}
+    compact>
     <Strip data={data} dataKey="temp" color={T.crit} label="temperature °C — warn 75° · crit 88°" domain={[45,105]} refs={[75,88]}/>
     <Strip data={data} dataKey="util" color={T.ok}   label="GPU utilization %" domain={[0,100]}/>
     <Strip data={data} dataKey="fan"  color={T.agent} label="fan speed %" domain={[0,100]}/>
