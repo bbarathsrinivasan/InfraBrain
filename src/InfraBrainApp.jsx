@@ -1215,14 +1215,6 @@ function TrainingDataTab({pairs, priorCount=237}) {
   // Future scope banner
   const PRIOR=priorCount, total=PRIOR+pairs.length;
   const SCHEMA=`{\n  "id":       1,\n  "context":  "sig: temp↑/fan↓ @ R2-N5 t042",\n  "rejected": "throttle_job",\n  "chosen":   "ramp_fans",\n  "source":   "operator_override"\n}`;
-  const PHASES = [
-    {n:"01",title:"Shadow mode",color:T.agent,
-      body:"Seed KG from postmortems and playbooks. Run in shadow mode against fault-injection tooling — accumulate corrections before touching live SREs."},
-    {n:"02",title:"Suggest-only with SREs",color:T.ok,
-      body:"Agent suggests, SRE decides. Every override writes to KG and exports a preference pair. Override rate falls as KG grows. This demo IS phase 02."},
-    {n:"03",title:"DPO / GRPO training",color:T.kg,
-      body:"Finetune a small model (3–8B, LoRA) via DPO on accumulated pairs. Gate on held-out regression. GRPO against simulator reward is the next step."},
-  ];
   return <div style={{display:"flex",flexDirection:"column",gap:12}}>
     {/* Future scope banner */}
     <div style={{background:T.agent+"11",border:`1px solid ${T.agent}44`,borderRadius:8,
@@ -1233,13 +1225,12 @@ function TrainingDataTab({pairs, priorCount=237}) {
           FUTURE SCOPE — Training Data Pipeline
         </div>
         <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted}}>
-          Architecture is ready · preference pairs accumulate every episode · two steps away from full RL training.
-          Current system uses KG memory + meta-agent code evolution (no model finetuning required).
+          Architecture is ready · preference pairs accumulate every episode · two steps from full RL.
+          Current system uses KG memory + meta-agent code evolution — no model finetuning required yet.
         </div>
       </div>
     </div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-    <div style={{display:"flex",flexDirection:"column",gap:12}}>
       <Panel title="Preference pairs" sub={`${total} total (${PRIOR} prior + ${pairs.length} this session) · every override produces one`}>
         <div style={{fontFamily:MONO,fontSize:28,color:T.kg}}>{total}</div>
         <div style={{fontSize:11,color:T.muted,marginBottom:10}}>labeled preference pairs exported</div>
@@ -1259,29 +1250,8 @@ function TrainingDataTab({pairs, priorCount=237}) {
           border:`1px solid ${T.line}`,borderRadius:6,padding:10,color:T.muted}}>{SCHEMA}</pre>
         <div style={{marginTop:8}}><Btn disabled color={T.faint}>Export JSONL — future work: DPO / GRPO</Btn></div>
       </Panel>
-      <DataCompositionPanel pairs={pairs}/>
     </div>
-    <div style={{display:"flex",flexDirection:"column",gap:12}}>
-      <Panel title="Cold start → data flywheel" sub="three-phase production deployment">
-        {PHASES.map(p => <div key={p.n} style={{borderLeft:`3px solid ${p.color}`,paddingLeft:12,marginBottom:16}}>
-          <div style={{fontFamily:MONO,fontSize:9,color:p.color,letterSpacing:2,marginBottom:2}}>PHASE {p.n}</div>
-          <div style={{fontSize:13,fontWeight:600,marginBottom:4}}>{p.title}</div>
-          <div style={{fontSize:11.5,color:T.muted}}>{p.body}</div>
-        </div>)}
-        <div style={{fontFamily:MONO,fontSize:10.5,color:T.faint,borderTop:`1px solid ${T.line}`,paddingTop:10}}>
-          The simulator plays the role of the real SRE environment — same architecture, compressed clock.
-        </div>
-      </Panel>
-      <Panel title="Why not RL now?" dashed>
-        <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.9}}>
-          <div><span style={{color:T.ok}}>What we have:</span> closed loop — KG + meta-agent evolution on held-out scenarios.</div>
-          <div style={{marginTop:6}}><span style={{color:T.kg}}>What the data enables:</span> DPO on these pairs. Same architecture.</div>
-          <div style={{marginTop:6}}><span style={{color:T.agent}}>After DPO:</span> GRPO against simulator reward. Nothing new to build.</div>
-          <div style={{marginTop:6,color:T.faint}}>Two days → not enough episodes for stable RL. Preference pairs are the honest bridge.</div>
-        </div>
-      </Panel>
-    </div>
-    </div>{/* end grid */}
+    <DataCompositionPanel pairs={pairs}/>
   </div>;
 }
 
@@ -1319,7 +1289,7 @@ function ArchitectureDiagram() {
   );
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%"}}>
+    <svg viewBox="0 0 640 320" style={{width:"100%",maxHeight:320}}>
       <defs>
         {aC.map(c=>(
           <marker key={c} id={`ma${c.replace("#","")}`}
@@ -1330,49 +1300,46 @@ function ArchitectureDiagram() {
       </defs>
 
       {/* ── Row 1: Meta Agent (full width) ── */}
-      <Bx x={20} y={16} w={600} h={60} col={T.agent} bold
+      <Bx x={20} y={8} w={600} h={46} col={T.agent} bold
         t="META AGENT" s="offline · nightly batch · Loop 3"/>
 
       {/* ↓ code diff */}
-      <Ar x1={140} y1={76} x2={140} y2={140} col={T.agent} label="rewrites code" lx={146} ly={112}/>
-      {/* ↓ seeds KG (dashed) */}
-      <Ar x1={500} y1={76} x2={500} y2={140} col={T.kg} dashed label="seeds + updates" lx={506} ly={108}/>
+      <Ar x1={130} y1={54} x2={130} y2={90} col={T.agent} label="rewrites code" lx={136} ly={76}/>
+      {/* ↓ seeds KG */}
+      <Ar x1={500} y1={54} x2={500} y2={90} col={T.kg} dashed label="seeds + updates" lx={506} ly={74}/>
 
       {/* ── Row 2: Task Agent + KG Store ── */}
-      <Bx x={20} y={140} w={240} h={60} col={T.agent} t="TASK AGENT · gen-5" s="Gemini API · KG-augmented"/>
-      <Bx x={380} y={140} w={240} h={60} col={T.kg} t="Knowledge Graph" s="SQLite · corrections + seeds"/>
+      <Bx x={20} y={90} w={228} h={46} col={T.agent} t="TASK AGENT · gen-5" s="Gemini API · KG-augmented"/>
+      <Bx x={390} y={90} w={230} h={46} col={T.kg} t="Knowledge Graph" s="SQLite · corrections + seeds"/>
 
-      {/* Task → KG retrieval (solid) */}
-      <Ar x1={260} y1={162} x2={380} y2={162} col={T.kg} label="retrieval (k=5)  · Loop 1" lx={268} ly={156}/>
+      {/* Task → KG retrieval */}
+      <Ar x1={248} y1={107} x2={390} y2={107} col={T.kg} label="retrieval (k=5) · Loop 1" lx={256} ly={101}/>
       {/* KG → Task correction write (dashed) */}
-      <Ar x1={380} y1={178} x2={260} y2={178} col={T.kg} dashed/>
+      <Ar x1={390} y1={121} x2={248} y2={121} col={T.kg} dashed/>
 
       {/* ↓ diagnosis */}
-      <Ar x1={140} y1={200} x2={140} y2={274} col={T.ok} label="streams diagnosis" lx={146} ly={240}/>
+      <Ar x1={130} y1={136} x2={130} y2={172} col={T.ok} label="streams diagnosis" lx={136} ly={158}/>
 
       {/* ── Row 3: SRE Console ── */}
-      <Bx x={20} y={274} w={240} h={60} col={T.ok} t="SRE Console" s="accept / override"/>
+      <Bx x={20} y={172} w={228} h={46} col={T.ok} t="SRE Console" s="accept / override"/>
 
-      {/* L-path: SRE right edge → KG bottom (Loop 2 correction) */}
-      <Pa d="M 260 304 H 500 V 200" col={T.kg} dashed
-        label="Loop 2 · writes correction on override" lx={268} ly={297}/>
+      {/* L-path: SRE → KG bottom  (Loop 2) */}
+      <Pa d="M 248 195 H 504 V 136" col={T.kg} dashed
+        label="Loop 2 · writes correction on override" lx={256} ly={188}/>
 
       {/* ↓ override → pair */}
-      <Ar x1={140} y1={334} x2={140} y2={390} col={T.muted} label="override → pair export" lx={146} ly={365}/>
+      <Ar x1={130} y1={218} x2={130} y2={250} col={T.muted} label="override → pair" lx={136} ly={238}/>
 
       {/* ── Row 4: Trace Store ── */}
-      <Bx x={20} y={390} w={240} h={52} col={T.muted} t="Trace Store + Pref Pairs" s="episodes · preference pairs"/>
+      <Bx x={20} y={250} w={228} h={44} col={T.muted} t="Trace Store + Pref Pairs" s="episodes · preference pairs"/>
 
-      {/* Big L-path: Trace right → up right side → Meta Agent right (Loop 3 feedback) */}
-      <Pa d="M 260 416 H 632 V 46 H 620" col={T.agent} dashed
-        label="Loop 3 · episode traces (nightly)" lx={268} ly={432}/>
+      {/* Big L-path: Trace → right side → Meta Agent right */}
+      <Pa d="M 248 272 H 630 V 31 H 620" col={T.agent} dashed
+        label="Loop 3 · episode traces (nightly)" lx={256} ly={289}/>
 
-      {/* Right side vertical label */}
-      <text x={637} y={232} textAnchor="middle" fill={T.agent} fontSize={8} fontFamily={MONO}
-        opacity={0.65} transform="rotate(-90,637,232)">Loop 3 feedback</text>
-
-      {/* Legend strip */}
-      <rect x={20} y={440} width={600} height={0} rx={4} fill={T.soft} stroke={T.line} strokeWidth={1}/>
+      {/* Right side label */}
+      <text x={633} y={162} textAnchor="middle" fill={T.agent} fontSize={7.5} fontFamily={MONO}
+        opacity={0.6} transform="rotate(-90,633,162)">Loop 3 traces</text>
     </svg>
   );
 }
