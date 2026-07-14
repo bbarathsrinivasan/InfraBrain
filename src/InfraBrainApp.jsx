@@ -459,7 +459,7 @@ function RackGrid({nodes, selected, repairs, onSelect}) {
           const repairing=repairSet.has(n.id);
           return <button key={n.id} onClick={()=>onSelect(n.id)}
             title={`${n.id} · ${n.temp.toFixed(1)}°C`}
-            style={{height:32,borderRadius:4,cursor:"pointer",position:"relative",
+            style={{height:26,borderRadius:4,cursor:"pointer",position:"relative",
               background:col+"22",border:`1px solid ${isSel?T.agent:col}`,
               outline:isSel?`1px solid ${T.agent}`:"none"}}>
             {repairing && <span style={{position:"absolute",top:-5,right:-3,fontSize:7,
@@ -504,9 +504,9 @@ function RepairQueue({repairs, onCancel, style, fillHeight}) {
 
 /* ── TELEMETRY ───────────────────────────────────────────────────────── */
 function Strip({data, dataKey, color, label, domain, refs=[]}) {
-  return <div style={{marginBottom:4}}>
-    <div style={{fontFamily:MONO,fontSize:9.5,color:T.faint,marginBottom:1}}>{label}</div>
-    <ResponsiveContainer width="100%" height={66}>
+  return <div style={{marginBottom:2}}>
+    <div style={{fontFamily:MONO,fontSize:9,color:T.faint,marginBottom:1}}>{label}</div>
+    <ResponsiveContainer width="100%" height={52}>
       <LineChart data={data} margin={{top:4,right:6,bottom:0,left:-26}}>
         <XAxis dataKey="t" hide/>
         <YAxis domain={domain} tick={{fill:T.faint,fontSize:9}} stroke={T.line}/>
@@ -649,6 +649,21 @@ function EventLog({log, focusNode, style, fillHeight}) {
   </Panel>;
 }
 
+/* ── THINKING INDICATOR ──────────────────────────────────────────────── */
+function ThinkingDots() {
+  const [n, setN] = useState(1);
+  useEffect(()=>{
+    const h = setInterval(()=>setN(v=>(v%3)+1), 420);
+    return ()=>clearInterval(h);
+  },[]);
+  return (
+    <span style={{color:T.agent,fontFamily:MONO,fontSize:11}}>
+      <span style={{display:"inline-block",marginRight:5,fontSize:9,opacity:0.7}}>⬤</span>
+      thinking{"•".repeat(n)}
+    </span>
+  );
+}
+
 /* ── SRE CHAT + SLASH COMMAND PALETTE ────────────────────────────────── */
 function SREChat({messages, onSend, focusNode}) {
   const [val,setVal] = useState("");
@@ -678,11 +693,13 @@ function SREChat({messages, onSend, focusNode}) {
   return <Panel title="SRE console" sub={`ask the agent · type "/" for actions · focus ${focusNode||"—"}`} style={{flex:1,display:"flex",flexDirection:"column"}}>
     <div ref={scrollRef} style={{flex:1,minHeight:200,maxHeight:420,overflowY:"auto",
       fontFamily:MONO,fontSize:11,lineHeight:1.7,marginBottom:8}}>
-      {messages.map((m,i)=><div key={i} style={{marginBottom:7}}>
+      {messages.map((m,i)=><div key={i} style={{marginBottom:7,display:"flex",gap:6,alignItems:"flex-start"}}>
         <span style={{color:roleColor[m.role]||T.muted,fontSize:9.5,
-          display:"inline-block",minWidth:42}}>{roleLabel[m.role]||"SYS"}</span>
-        <span style={{color:m.role==="sre"?T.text:roleColor[m.role]||T.muted,
-          whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{m.text}</span>
+          minWidth:44,flexShrink:0,paddingTop:1}}>{roleLabel[m.role]||"SYS"}</span>
+        {m.thinking
+          ? <ThinkingDots/>
+          : <span style={{color:m.role==="sre"?T.text:roleColor[m.role]||T.muted,
+              whiteSpace:"pre-wrap",wordBreak:"break-word",flex:1}}>{m.text}</span>}
       </div>)}
     </div>
     <div style={{position:"relative"}}>
@@ -1733,8 +1750,8 @@ export default function InfraBrainApp() {
 
   const addLog = useCallback((kind,text,node) =>
     setLog(l=>[{t:stRef.current.tick,kind,text,node},...l].slice(0,90)),[]);
-  const addChat = useCallback((role,text) =>
-    setChat(c=>[...c,{role,text}].slice(-60)),[]);
+  const addChat = useCallback((role,text,thinking=false) =>
+    setChat(c=>[...c,{role,text,thinking}].slice(-60)),[]);
   const backendConnected = backendStatus==="connected";
 
   function buildSuggestion(n, gen, faultType, nodeId) {
@@ -1957,12 +1974,12 @@ export default function InfraBrainApp() {
       }
     }
 
-    // ── LLM stream (backend) or scripted fallback ─────────────────────────
+    // ── LLM stream (backend) ─────────────────────────────────────────────
     if(backendConnected && BACKEND_HTTP){
       const apiUrl = `${BACKEND_HTTP}/api/chat`;
       const nodeState = S.nodes.find(n=>n.id===node)||{};
-      // Add streaming placeholder
-      addChat("agent","▌");
+      // Show thinking indicator until first token arrives
+      addChat("agent","",true);
       let agentText="";
       try {
         const resp = await fetch(apiUrl,{
@@ -1982,29 +1999,38 @@ export default function InfraBrainApp() {
             if(raw==="[DONE]") break;
             try{
               agentText += JSON.parse(raw).text||"";
+              // Clear thinking on first chunk, then keep streaming text
               setChat(c=>{
-                const u=[...c]; u[u.length-1]={role:"agent",text:agentText};
+                const u=[...c]; u[u.length-1]={role:"agent",text:agentText,thinking:false};
                 return u;
               });
             } catch{}
           }
         }
-        // Finalise (remove blinking cursor artefact)
-        setChat(c=>{ const u=[...c]; u[u.length-1]={role:"agent",text:agentText||"…"}; return u; });
+        setChat(c=>{ const u=[...c]; u[u.length-1]={role:"agent",text:agentText||"…",thinking:false}; return u; });
       } catch(err){
-        setChat(c=>{ const u=[...c]; u[u.length-1]={role:"agent",text:`[Stream error: ${err.message}]`}; return u; });
+        setChat(c=>{ const u=[...c]; u[u.length-1]={role:"agent",text:`[stream error: ${err.message}]`,thinking:false}; return u; });
       }
       return;
     }
 
     // ── Scripted fallback (demo mode, no backend) ─────────────────────────
-    if(text.startsWith("/")){
-      addChat("agent",askAgent({text:text.slice(1),incident,node,
-        nodeState:S.nodes.find(n=>n.id===node),agentGen:S.agentGen,corrections:S.kgCorr}));
-      return;
-    }
-    addChat("agent",askAgent({text,incident,node,
-      nodeState:S.nodes.find(n=>n.id===node),agentGen:S.agentGen,corrections:S.kgCorr}));
+    // Show thinking briefly, then replace with response
+    const _ctx = {
+      text: text.startsWith("/") ? text.slice(1) : text,
+      incident, node,
+      nodeState: S.nodes.find(n=>n.id===node),
+      agentGen: S.agentGen,
+      corrections: S.kgCorr,
+    };
+    addChat("agent","",true); // thinking
+    setTimeout(()=>{
+      setChat(c=>{
+        const u=[...c];
+        if(u[u.length-1]?.thinking) u[u.length-1]={role:"agent",text:askAgent(_ctx),thinking:false};
+        return u;
+      });
+    }, 500);
   }
 
   const statusColor = {connected:T.ok, error:T.crit, reconnecting:T.warn, connecting:T.warn, demo:T.faint};
