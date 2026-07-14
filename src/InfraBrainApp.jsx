@@ -336,7 +336,7 @@ function Dot({color}) {
 }
 
 /* ── STATUS BAR ──────────────────────────────────────────────────────── */
-function StatusBar({tick,running,agentGen,episodes,corrections,onRun,onGen0,onGen4}) {
+function StatusBar({tick,running,agentGen,episodes,corrections,onRun,onGen0,onGen4,chatOpen,onChatToggle}) {
   return <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
     <div style={{fontFamily:MONO,fontSize:18,fontWeight:700,letterSpacing:4}}>
       INFRA<span style={{color:T.agent}}>BRAIN</span>
@@ -351,6 +351,16 @@ function StatusBar({tick,running,agentGen,episodes,corrections,onRun,onGen0,onGe
     <Btn color={running?T.warn:T.ok} onClick={onRun} style={{minWidth:80}}>
       {running?"❚❚ PAUSE":"▶ RUN"}
     </Btn>
+    {/* SRE Console toggle — opens floating chat panel, zero screen space when closed */}
+    <button onClick={onChatToggle} style={{
+      background:chatOpen?T.agent+"22":"transparent",
+      border:`1px solid ${chatOpen?T.agent:T.line}`,
+      color:chatOpen?T.agent:T.muted,
+      borderRadius:6,padding:"5px 12px",fontSize:11,fontFamily:MONO,
+      cursor:"pointer",display:"flex",alignItems:"center",gap:6,
+    }}>
+      <span style={{fontSize:13}}>💬</span> SRE Console
+    </button>
   </div>;
 }
 
@@ -692,57 +702,27 @@ function SREChat({messages, onSend, focusNode}) {
 
 /* ── OBSERVABILITY TAB ───────────────────────────────────────────────── */
 function ObservabilityTab(p) {
-  const [chatOpen, setChatOpen] = useState(false);
   const focusIncident = p.incidents.find(i=>i.node===p.focusNode && i.stage!=="resolved")
                      || p.incidents.find(i=>i.node===p.focusNode);
   return <div style={{display:"flex",flexDirection:"column",gap:12}}>
     <FleetHealthStrip nodes={p.nodes} incidents={p.incidents} repairs={p.repairs} mttr={p.mttr}/>
     <FocusSwitcher incidents={p.incidents} focusNode={p.focusNode} onFocus={p.onSelect}/>
-    <div style={{display:"flex",gap:12,alignItems:"start"}}>
-      {/* Main 3-column grid */}
-      <div style={{flex:1,display:"grid",gridTemplateColumns:"290px 1fr 350px",gap:12,alignItems:"start",minWidth:0}}>
-        {/* Left: rack + repair queue */}
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <RackGrid nodes={p.nodes} selected={p.focusNode} repairs={p.repairs} onSelect={p.onSelect}/>
-          <RepairQueue repairs={p.repairs} onCancel={p.onCancelRepair}/>
-        </div>
-        {/* Center: telemetry + blast radius */}
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <Telemetry history={p.history} nodes={p.nodes} selected={p.focusNode}/>
-          <BlastRunbook incident={focusIncident}/>
-        </div>
-        {/* Right: incident + event log */}
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          <IncidentPanel incident={focusIncident} agentGen={p.agentGen}
-            onAccept={p.onAccept} onOverride={p.onOverride} onEscalate={p.onEscalate}/>
-          <EventLog log={p.log} focusNode={p.focusNode}/>
-        </div>
+    <div style={{display:"grid",gridTemplateColumns:"290px 1fr 350px",gap:12,alignItems:"start"}}>
+      {/* Left: rack + repair queue */}
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <RackGrid nodes={p.nodes} selected={p.focusNode} repairs={p.repairs} onSelect={p.onSelect}/>
+        <RepairQueue repairs={p.repairs} onCancel={p.onCancelRepair}/>
       </div>
-
-      {/* SRE Chat — collapsible drawer on the right */}
-      <div style={{position:"relative",display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
-        {/* Toggle button */}
-        <button onClick={()=>setChatOpen(o=>!o)} style={{
-          background:chatOpen?T.agent+"22":T.soft,
-          border:`1px solid ${chatOpen?T.agent:T.line}`,
-          color:chatOpen?T.agent:T.muted,
-          borderRadius:8, padding:"6px 12px", fontFamily:MONO, fontSize:11,
-          cursor:"pointer", whiteSpace:"nowrap", display:"flex", alignItems:"center", gap:6,
-        }}>
-          <span style={{fontSize:14}}>💬</span>
-          {chatOpen ? "Close SRE Console" : "SRE Console"}
-        </button>
-        {/* Unread dot when chat is closed and messages exist */}
-        {!chatOpen && p.chat.length > 1 && (
-          <div style={{width:8,height:8,borderRadius:4,background:T.agent,
-            position:"absolute",top:-3,right:-3}}/>
-        )}
-        {/* Chat panel */}
-        {chatOpen && (
-          <div style={{width:340,flexShrink:0}}>
-            <SREChat messages={p.chat} onSend={p.onChat} focusNode={p.focusNode}/>
-          </div>
-        )}
+      {/* Center: telemetry + blast radius */}
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <Telemetry history={p.history} nodes={p.nodes} selected={p.focusNode}/>
+        <BlastRunbook incident={focusIncident}/>
+      </div>
+      {/* Right: incident + event log */}
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <IncidentPanel incident={focusIncident} agentGen={p.agentGen}
+          onAccept={p.onAccept} onOverride={p.onOverride} onEscalate={p.onEscalate}/>
+        <EventLog log={p.log} focusNode={p.focusNode}/>
       </div>
     </div>
   </div>;
@@ -1280,7 +1260,6 @@ function TrainingDataTab({pairs, priorCount=237}) {
         <div style={{marginTop:8}}><Btn disabled color={T.faint}>Export JSONL — future work: DPO / GRPO</Btn></div>
       </Panel>
       <DataCompositionPanel pairs={pairs}/>
-      <DataSourcesPanel/>
     </div>
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
       <Panel title="Cold start → data flywheel" sub="three-phase production deployment">
@@ -1308,214 +1287,128 @@ function TrainingDataTab({pairs, priorCount=237}) {
 
 /* ── OVERVIEW: ARCHITECTURE DIAGRAM ─────────────────────────────────── */
 function ArchitectureDiagram() {
-  const W = 900, H = 560;
-  const arrowColors = [T.agent, T.kg, T.ok, T.warn, T.line, T.muted];
+  const W=640, H=446;
+  const aC=[T.agent,T.kg,T.ok,T.muted];
 
-  // Box helper
-  const Box = ({x,y,w=210,h=58,col,title,sub,bold}) => (
+  const Bx=({x,y,w,h,col,t,s,bold})=>(
     <g>
-      <rect x={x} y={y} width={w} height={h} rx={8}
+      <rect x={x} y={y} width={w} height={h} rx={7}
         fill={col+"1A"} stroke={col} strokeWidth={bold?2:1.5}/>
-      <text x={x+w/2} y={sub?y+h/2-6:y+h/2+4} textAnchor="middle"
-        fill={col} fontSize={bold?12:11} fontFamily={MONO} fontWeight={bold?700:600}>{title}</text>
-      {sub && <text x={x+w/2} y={y+h/2+9} textAnchor="middle"
-        fill={T.faint} fontSize={8.5} fontFamily={MONO}>{sub}</text>}
+      <text x={x+w/2} y={s?y+h/2-5:y+h/2+5} textAnchor="middle"
+        fill={col} fontSize={bold?12:11} fontFamily={MONO} fontWeight={700}>{t}</text>
+      {s&&<text x={x+w/2} y={y+h/2+10} textAnchor="middle"
+        fill={T.faint} fontSize={8.5} fontFamily={MONO}>{s}</text>}
     </g>
   );
-
-  // Straight arrow
-  const Arr = ({x1,y1,x2,y2,col=T.line,dashed,label,lx,ly}) => (
-    <g opacity={0.85}>
+  const Ar=({x1,y1,x2,y2,col,dashed,label,lx,ly})=>(
+    <g opacity={0.9}>
       <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={col} strokeWidth={1.5}
         strokeDasharray={dashed?"5 3":undefined}
-        markerEnd={`url(#ah${col.replace("#","")})`}/>
-      {label && <text x={lx??((x1+x2)/2+5)} y={ly??((y1+y2)/2-3)}
+        markerEnd={`url(#ma${col.replace("#","")})`}/>
+      {label&&<text x={lx??((x1+x2)/2+5)} y={ly??((y1+y2)/2-3)}
         fill={col} fontSize={8.5} fontFamily={MONO}>{label}</text>}
     </g>
   );
-
-  // Curved arrow (SVG cubic bezier)
-  const Curve = ({d,col=T.line,dashed,label,lx,ly}) => (
-    <g opacity={0.8}>
+  const Pa=({d,col,dashed,label,lx,ly})=>(
+    <g opacity={0.85}>
       <path d={d} fill="none" stroke={col} strokeWidth={1.5}
         strokeDasharray={dashed?"5 3":undefined}
-        markerEnd={`url(#ah${col.replace("#","")})`}/>
-      {label && <text x={lx} y={ly} fill={col} fontSize={8.5} fontFamily={MONO}>{label}</text>}
+        markerEnd={`url(#ma${col.replace("#","")})`}/>
+      {label&&<text x={lx} y={ly} fill={col} fontSize={8.5} fontFamily={MONO}>{label}</text>}
     </g>
   );
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",maxHeight:560}}>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%"}}>
       <defs>
-        {arrowColors.map(c => (
-          <marker key={c} id={`ah${c.replace("#","")}`}
+        {aC.map(c=>(
+          <marker key={c} id={`ma${c.replace("#","")}`}
             markerWidth={8} markerHeight={8} refX={7} refY={3} orient="auto">
-            <path d="M0,0 L7,3 L0,6 z" fill={c} opacity={0.9}/>
+            <path d="M0,0 L7,3 L0,6 z" fill={c}/>
           </marker>
         ))}
       </defs>
 
-      {/* ── Row 1: Meta Agent ── */}
-      <Box x={290} y={16} w={320} h={62} col={T.agent} bold
-        title="META AGENT" sub="offline · batch evolution · Loop 3 (nightly)"/>
+      {/* ── Row 1: Meta Agent (full width) ── */}
+      <Bx x={20} y={16} w={600} h={60} col={T.agent} bold
+        t="META AGENT" s="offline · nightly batch · Loop 3"/>
 
-      {/* ── Arrows from Meta Agent ── */}
-      {/* → Task Agent: code diff */}
-      <Arr x1={450} y1={78} x2={450} y2={158} col={T.agent}
-        label="rewrites code (diff)" lx={458} ly={122}/>
-      {/* → KG: seeds & updates */}
-      <Curve d="M 610 46 C 720 46 760 130 760 158"
-        col={T.kg} dashed label="seeds + updates KG" lx={680} ly={95}/>
+      {/* ↓ code diff */}
+      <Ar x1={140} y1={76} x2={140} y2={140} col={T.agent} label="rewrites code" lx={146} ly={112}/>
+      {/* ↓ seeds KG (dashed) */}
+      <Ar x1={500} y1={76} x2={500} y2={140} col={T.kg} dashed label="seeds + updates" lx={506} ly={108}/>
 
-      {/* ── Row 2: Task Agent + KG ── */}
-      <Box x={290} y={158} w={260} h={62} col={T.agent}
-        title="TASK AGENT · gen-5" sub="Gemini API · KG-augmented prompt"/>
-      <Box x={680} y={158} w={190} h={62} col={T.kg}
-        title="Knowledge Graph" sub="SQLite · corrections + seeds"/>
+      {/* ── Row 2: Task Agent + KG Store ── */}
+      <Bx x={20} y={140} w={240} h={60} col={T.agent} t="TASK AGENT · gen-5" s="Gemini API · KG-augmented"/>
+      <Bx x={380} y={140} w={240} h={60} col={T.kg} t="Knowledge Graph" s="SQLite · corrections + seeds"/>
 
-      {/* Task Agent ↔ KG */}
-      <Arr x1={550} y1={177} x2={680} y2={177} col={T.kg}
-        label="similarity retrieval (k=5)" lx={556} ly={172}/>
-      <Arr x1={680} y1={200} x2={550} y2={200} col={T.kg} dashed/>
+      {/* Task → KG retrieval (solid) */}
+      <Ar x1={260} y1={162} x2={380} y2={162} col={T.kg} label="retrieval (k=5)  · Loop 1" lx={268} ly={156}/>
+      {/* KG → Task correction write (dashed) */}
+      <Ar x1={380} y1={178} x2={260} y2={178} col={T.kg} dashed/>
 
-      {/* ── Fan-out arrows from Task Agent to servers ── */}
-      <Curve d="M 340 220 C 270 258 120 268 100 295"
-        col={T.muted} label="reads telemetry" lx={168} ly={256}/>
-      <Curve d="M 390 220 C 380 264 310 272 295 295"
-        col={T.muted}/>
-      <Curve d="M 450 220 C 450 264 485 274 490 295"
-        col={T.ok} label="streams diagnosis" lx={462} ly={262}/>
-      <Curve d="M 500 220 C 560 264 645 274 660 295"
-        col={T.ok}/>
+      {/* ↓ diagnosis */}
+      <Ar x1={140} y1={200} x2={140} y2={274} col={T.ok} label="streams diagnosis" lx={146} ly={240}/>
 
-      {/* ── Row 3: Server boxes ── */}
-      <Box x={20}  y={295} w={155} h={56} col={T.muted}
-        title="Telemetry" sub="WebSocket · 32 nodes"/>
-      <Box x={190} y={295} w={155} h={56} col={T.muted}
-        title="Simulator" sub="Python · 650ms tick"/>
-      <Box x={380} y={295} w={175} h={56} col={T.ok}
-        title="SRE Console" sub="accept / override"/>
-      <Box x={570} y={295} w={200} h={56} col={T.ok}
-        title="Repair Executor" sub="Borg-style RT jobs"/>
+      {/* ── Row 3: SRE Console ── */}
+      <Bx x={20} y={274} w={240} h={60} col={T.ok} t="SRE Console" s="accept / override"/>
 
-      {/* Simulator → Telemetry */}
-      <Arr x1={190} y1={320} x2={175} y2={320} col={T.muted}
-        label="ticks" lx={148} ly={315}/>
+      {/* L-path: SRE right edge → KG bottom (Loop 2 correction) */}
+      <Pa d="M 260 304 H 500 V 200" col={T.kg} dashed
+        label="Loop 2 · writes correction on override" lx={268} ly={297}/>
 
-      {/* ── Feedback arrows ── */}
-      {/* SRE override → Trace Store */}
-      <Arr x1={467} y1={351} x2={467} y2={408}
-        col={T.warn} label="override → pair" lx={474} ly={383}/>
-      {/* Repair outcome → Trace Store */}
-      <Curve d="M 670 351 C 670 380 600 400 560 415"
-        col={T.warn} dashed/>
+      {/* ↓ override → pair */}
+      <Ar x1={140} y1={334} x2={140} y2={390} col={T.muted} label="override → pair export" lx={146} ly={365}/>
 
       {/* ── Row 4: Trace Store ── */}
-      <Box x={320} y={408} w={280} h={58} col={T.warn}
-        title="Trace Store + Pref Pairs" sub="every episode · override → pair export"/>
+      <Bx x={20} y={390} w={240} h={52} col={T.muted} t="Trace Store + Pref Pairs" s="episodes · preference pairs"/>
 
-      {/* KG correction from override (Loop 2) */}
-      <Curve d="M 320 450 C 200 460 140 420 140 380 C 140 310 210 250 290 210"
-        col={T.kg} dashed label="Loop 2: write correction" lx={102} ly={340}/>
+      {/* Big L-path: Trace right → up right side → Meta Agent right (Loop 3 feedback) */}
+      <Pa d="M 260 416 H 632 V 46 H 620" col={T.agent} dashed
+        label="Loop 3 · episode traces (nightly)" lx={268} ly={432}/>
 
-      {/* Trace Store → Meta Agent (Loop 3 feedback) */}
-      <Curve d="M 840 410 C 880 300 880 120 612 46"
-        col={T.agent} dashed label="episode traces (Loop 3)" lx={875} ly={240}/>
-      {/* invisible anchor for the big curve (right side) */}
-      <Box x={815} y={390} w={0} h={0} col="transparent" title=""/>
+      {/* Right side vertical label */}
+      <text x={637} y={232} textAnchor="middle" fill={T.agent} fontSize={8} fontFamily={MONO}
+        opacity={0.65} transform="rotate(-90,637,232)">Loop 3 feedback</text>
 
-      {/* ── Legend ── */}
-      <rect x={20} y={490} width={860} height={46} rx={6}
-        fill={T.soft} stroke={T.line} strokeWidth={1}/>
-      {[
-        {col:T.agent, dashed:false, label:"Loop 3 — offline meta-agent evolution"},
-        {col:T.kg,    dashed:true,  label:"Loop 2 — KG correction (per override)"},
-        {col:T.ok,    dashed:false, label:"Loop 1 — task agent diagnosis + repair"},
-        {col:T.warn,  dashed:true,  label:"feedback / trace data"},
-      ].map(({col,dashed,label},i) => {
-        const bx = 36 + i * 214;
-        return <g key={i}>
-          <line x1={bx} y1={516} x2={bx+28} y2={516} stroke={col} strokeWidth={2}
-            strokeDasharray={dashed?"5 3":undefined}/>
-          <text x={bx+34} y={520} fill={T.muted} fontSize={9} fontFamily={MONO}>{label}</text>
-        </g>;
-      })}
+      {/* Legend strip */}
+      <rect x={20} y={440} width={600} height={0} rx={4} fill={T.soft} stroke={T.line} strokeWidth={1}/>
     </svg>
   );
 }
 
 /* ── OVERVIEW TAB ────────────────────────────────────────────────────── */
 function OverviewTab() {
+  const loops = [
+    { id:"Loop 1", col:T.ok,    title:"KG Retrieval",
+      sub:"per incident · seconds · no weight updates",
+      desc:"Task Agent queries the Knowledge Graph with the current symptom signature. Top-5 similar corrections + seed rules are ranked and injected into the Gemini prompt. Weights never change — only context changes." },
+    { id:"Loop 2", col:T.kg,    title:"KG Memory",
+      sub:"per override · minutes · non-parametric write",
+      desc:"SRE override writes a correction row to SQLite. Future incidents with matching signatures auto-retrieve it. Auditable and reversible — a bad lesson is a DELETE, not an un-training run." },
+    { id:"Loop 3", col:T.agent, title:"Meta-Agent Evolution",
+      sub:"offline · nightly batch · code rewriting",
+      desc:"Meta-agent reads episode traces, clusters failures, proposes a unified diff to task-agent retrieval/prompt code. Accepted only if held-out composite score improves. DGM-Hyperagent pattern." },
+  ];
   return (
     <div style={{display:"flex",flexDirection:"column",gap:14}}>
-      <div style={{fontFamily:MONO,fontSize:10,color:T.faint,letterSpacing:2}}>
-        SYSTEM ARCHITECTURE — THREE SELF-IMPROVING LOOPS · SUGGEST-ONLY · SANDBOXED TO SIMULATOR
-      </div>
-
-      <Panel title="InfraBrain — End-to-End Architecture"
-        sub="meta-agent (top) evolves task-agent code offline · task agent reads from multiple services · overrides close the feedback loop">
+      <Panel title="InfraBrain — System Architecture"
+        sub="suggest-only · nothing executes without SRE approval · self-modification sandboxed to simulator">
         <ArchitectureDiagram/>
       </Panel>
-
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
-        <Panel title="Loop 1 · KG Retrieval" sub="per-incident · seconds · no weight updates">
-          <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.85}}>
-            <div style={{color:T.agent,fontWeight:600,marginBottom:6,fontSize:12}}>Context augmentation</div>
-            Task Agent queries the KG with the current symptom signature (e.g. <span style={{color:T.warn}}>temp↑/fan↓ @ R2-N5</span>).
-            Top-5 similar corrections + seed rules are ranked and injected into the Gemini prompt.
-            <div style={{marginTop:10,padding:"6px 8px",background:T.soft,borderRadius:5,fontSize:10,color:T.faint}}>
-              Weights never change. Context changes.
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+        {loops.map(({id,col,title,sub,desc})=>(
+          <div key={id} style={{background:T.panel,border:`1px solid ${T.line}`,
+            borderTop:`3px solid ${col}`,borderRadius:8,padding:14}}>
+            <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:5}}>
+              <span style={{fontFamily:MONO,fontSize:9,letterSpacing:1,color:col,
+                background:col+"22",padding:"1px 7px",borderRadius:3}}>{id}</span>
+              <span style={{fontWeight:600,fontSize:12.5}}>{title}</span>
             </div>
+            <div style={{fontFamily:MONO,fontSize:9.5,color:T.faint,marginBottom:8}}>{sub}</div>
+            <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:1.75}}>{desc}</div>
           </div>
-        </Panel>
-        <Panel title="Loop 2 · KG Memory" sub="per-override · minutes · non-parametric write">
-          <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.85}}>
-            <div style={{color:T.kg,fontWeight:600,marginBottom:6,fontSize:12}}>Auditable institutional memory</div>
-            SRE override → correction row written to SQLite KG. Future incidents with matching signatures retrieve it automatically.
-            <div style={{marginTop:10,padding:"6px 8px",background:T.soft,borderRadius:5,fontSize:10,color:T.faint}}>
-              Auditable · reversible · no catastrophic forgetting.<br/>A bad lesson is a DELETE, not an un-training run.
-            </div>
-          </div>
-        </Panel>
-        <Panel title="Loop 3 · Meta-Agent Evolution" sub="offline · nightly batch · code rewriting">
-          <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.85}}>
-            <div style={{color:T.ok,fontWeight:600,marginBottom:6,fontSize:12}}>Autonomous code improvement</div>
-            Meta-agent (Gemini) reads episode traces, clusters failures, proposes a unified diff to task-agent retrieval/prompt code.
-            Accepted only if held-out composite improves.
-            <div style={{marginTop:10,padding:"6px 8px",background:T.soft,borderRadius:5,fontSize:10,color:T.faint}}>
-              DGM-Hyperagent pattern. Every variant archived with parent + score.
-            </div>
-          </div>
-        </Panel>
-      </div>
-
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-        <Panel title="Why suggest-only?" sub="safety constraint — nothing runs without SRE approval">
-          <div style={{fontFamily:MONO,fontSize:11,color:T.muted,lineHeight:1.85}}>
-            <div style={{display:"flex",flexDirection:"column",gap:6}}>
-              {[
-                {col:T.ok,   label:"Agent suggests",  detail:"diagnosis + recommended action + cited evidence"},
-                {col:T.warn, label:"SRE decides",      detail:"Accept to queue repair, or Override with correct action"},
-                {col:T.kg,   label:"Override teaches", detail:"correction written to KG · preference pair exported"},
-                {col:T.agent,label:"Loop tightens",    detail:"next incident with same signature: agent is already right"},
-              ].map(({col,label,detail})=>
-                <div key={label} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
-                  <Dot color={col}/>
-                  <div><span style={{color:col,fontWeight:600}}>{label} </span>
-                    <span style={{color:T.faint}}>— {detail}</span></div>
-                </div>
-              )}
-            </div>
-          </div>
-        </Panel>
-        <Panel title="Key design decisions" sub="what makes this different from a chatbot on infra">
-          <div style={{fontFamily:MONO,fontSize:10.5,color:T.muted,lineHeight:2}}>
-            <div><span style={{color:T.agent}}>Non-parametric KG</span> — operator knowledge stored as rows, not weights. Auditable, reversible, instant.</div>
-            <div><span style={{color:T.kg}}>Deceptive symptom handling</span> — fan failure causes thermal throttle → util DROP. Gen-0 misdiagnoses as CPU idle. Gen-5 gets it right via KG correction + explicit diagnostic note.</div>
-            <div><span style={{color:T.ok}}>Held-out eval gate</span> — meta-agent proposals rejected unless composite improves on scenarios the agent never saw. Prevents memorisation.</div>
-            <div><span style={{color:T.warn}}>Data flywheel</span> — every override enriches the KG and produces a preference pair. Override rate falls as KG grows.</div>
-          </div>
-        </Panel>
+        ))}
       </div>
     </div>
   );
@@ -1573,6 +1466,7 @@ export default function InfraBrainApp() {
   const [pairs,setPairs]       = useState([]);
   const [chat,setChat] = useState([{role:"sys",text:'SRE console ready. Ask a question, or type "/" for actions.'}]);
   const [log,setLog] = useState([{t:0,kind:"sys",text:"Simulator ready. Press RUN — faults fire at t010 (R2-N5 fan) and t022 (R3-N2 mem)."}]);
+  const [chatOpen, setChatOpen]           = useState(false);
   const [backendStatus, setBackendStatus] = useState(BACKEND_WS?"connecting":"demo");
   const [liveMetrics, setLiveMetrics]     = useState(null);
   const [retrievalHits, setRetrievalHits] = useState(null);
@@ -2041,6 +1935,7 @@ export default function InfraBrainApp() {
         <div style={{flex:1}}>
           <StatusBar tick={tick} running={running} agentGen={agentGen} episodes={episodes}
             corrections={kgCorr.length} onRun={handleRun}
+            chatOpen={chatOpen} onChatToggle={()=>setChatOpen(o=>!o)}
             onGen0={()=>{resetEpisode(0);setTab("Observability");}}
             onGen4={()=>{resetEpisode(4);setTab("Observability");}}/>
         </div>
@@ -2050,6 +1945,24 @@ export default function InfraBrainApp() {
           {statusLabel[backendStatus]}
         </div>
       </div>
+
+      {/* SRE Console — floating panel anchored to navbar, zero space when closed */}
+      {chatOpen && (
+        <div style={{position:"fixed",top:56,right:14,width:360,zIndex:1000,
+          borderRadius:10,boxShadow:"0 12px 40px rgba(0,0,0,.65)"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",
+            background:T.soft,borderRadius:"10px 10px 0 0",
+            padding:"7px 12px",borderBottom:`1px solid ${T.line}`}}>
+            <span style={{fontFamily:MONO,fontSize:11,fontWeight:600,color:T.agent}}>
+              💬 SRE Console — {focusNode}
+            </span>
+            <button onClick={()=>setChatOpen(false)} style={{
+              background:"transparent",border:"none",color:T.muted,
+              fontSize:16,cursor:"pointer",lineHeight:1,padding:"0 2px"}}>×</button>
+          </div>
+          <SREChat messages={chat} onSend={handleChat} focusNode={focusNode}/>
+        </div>
+      )}
       <div style={{marginTop:12,marginBottom:12}}>
         <TabBar active={tab} onSelect={setTab}/>
       </div>
