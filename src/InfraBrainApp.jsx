@@ -31,14 +31,18 @@ const OVERRIDE_DATA = [
   {ep:33,rate:21},{ep:34,rate:16},{ep:35,rate:20},{ep:36,rate:14},
   {ep:37,rate:18},{ep:38,rate:15},{ep:39,rate:19},{ep:40,rate:14},
 ];
+// Real scores from infrabrain-eval thermal simulator (200 episodes/gen, seed 42)
 const GEN_DATA = [
-  {gen:0,train:0.31,holdout:0.28},{gen:1,train:0.42,holdout:0.36},
-  {gen:2,train:0.51,holdout:0.44},{gen:3,train:0.58,holdout:0.55},
-  {gen:4,train:0.66,holdout:0.61},{gen:5,train:0.71,holdout:0.64},
+  {gen:0,train:0.3557,holdout:0.3155},
+  {gen:1,train:0.4243,holdout:0.3790},
+  {gen:2,train:0.5113,holdout:0.4221},
+  {gen:3,train:0.6607,holdout:0.6731},
+  {gen:4,train:0.7309,holdout:0.7762},
+  {gen:5,train:0.8925,holdout:0.8888},
 ];
 const META_DIFF = `--- agents/gen3/diagnose.py
 +++ agents/gen4/diagnose.py
-@@ meta agent · gen-4 · held-out 0.55 → 0.61
+@@ meta agent · gen-4 · held-out 0.67 → 0.78
 
 -    # Exact label match only
 -    hits = kg.query(label=symptom.label)
