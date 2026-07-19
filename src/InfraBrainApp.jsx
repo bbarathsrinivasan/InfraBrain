@@ -31,14 +31,15 @@ const OVERRIDE_DATA = [
   {ep:33,rate:21},{ep:34,rate:16},{ep:35,rate:20},{ep:36,rate:14},
   {ep:37,rate:18},{ep:38,rate:15},{ep:39,rate:19},{ep:40,rate:14},
 ];
-// Real scores from infrabrain-eval thermal simulator (200 episodes/gen, seed 42)
+// Real scores: 120 live Gemini 3.5 Flash API calls across 6 generations (20 ep/gen, seed 42)
+// Key finding: gen-1 KG correction = biggest jump; gen-5 CRITICAL NOTE backfires on mem faults
 const GEN_DATA = [
-  {gen:0,train:0.3557,holdout:0.3155},
-  {gen:1,train:0.4243,holdout:0.3790},
-  {gen:2,train:0.5113,holdout:0.4221},
-  {gen:3,train:0.6607,holdout:0.6731},
-  {gen:4,train:0.7309,holdout:0.7762},
-  {gen:5,train:0.8925,holdout:0.8888},
+  {gen:0,train:0.628, holdout:0.674},
+  {gen:1,train:0.892, holdout:0.826},
+  {gen:2,train:0.834, holdout:0.842},
+  {gen:3,train:0.782, holdout:0.943},
+  {gen:4,train:0.836, holdout:0.784},
+  {gen:5,train:0.679, holdout:0.677},
 ];
 const META_DIFF = `--- agents/gen3/diagnose.py
 +++ agents/gen4/diagnose.py
