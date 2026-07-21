@@ -17,7 +17,7 @@
 
 > **"How many of you have seen an AI system make the same mistake twice?"**
 
-That's the problem. When an AI diagnostic agent gets a fault wrong, a human corrects it — and the agent learns nothing. The next identical fault gets misdiagnosed again.
+That's the problem. We're talking about server infrastructure — nodes throwing hardware alerts: a fan spinning down, a CPU thermal throttling, memory pressure spiking. An AI diagnostic agent reads the telemetry and recommends a remediation action — ramp the fans, throttle the job, migrate the workload. When it picks the wrong action, an SRE corrects it. And the agent learns nothing. The next identical fault, on the next identical node, gets misdiagnosed again.
 
 - Fault fires → agent misreads a deceptive signal → applies the wrong fix
 - Human overrides → correct fix applied → **the correction vanishes**
