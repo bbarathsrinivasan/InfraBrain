@@ -1,6 +1,6 @@
 # InfraBrain: A Self-Improving Agent That Learns from Every Override
 
-**5-minute presentation · 3 parts · 6 slides**
+**5-minute presentation · 3 parts · 7 slides**
 
 ---
 
@@ -67,9 +67,31 @@ InfraBrain closes the loop — three ways:
 
 ---
 
+### Slide 5 · Darwin Gödel Machine — The Paper
+
+> *"This isn't just an idea we had — it's grounded in a 2025 paper from Sakana AI and Google DeepMind."*
+
+**Darwin Gödel Machine** — arXiv 2503.19461  
+*Sakana AI · Google DeepMind · University of British Columbia, 2025*
+
+Core idea: an agent that iteratively rewrites its own code, validated by an empirical eval gate before each new version ships.
+
+**How InfraBrain maps to it:**
+
+| Paper concept | InfraBrain implementation |
+|---|---|
+| Meta-agent | `POST /api/meta` (InfraBrain backend) |
+| Code diff / rewrite | Task-agent prompt rewrite from KG patterns |
+| Eval gate | `infrabrain-eval` (120 live Gemini API calls) |
+| Block regression | Gen-5 CRITICAL NOTE caught before deploy |
+
+*→ Add paper cover image to this slide before the talk*
+
+---
+
 ## Part 3 — Why It's Novel
 
-### Slide 5 · Three Novel Contributions
+### Slide 6 · Three Novel Contributions
 
 > **"Three things here that don't exist together anywhere else."**
 
@@ -90,7 +112,7 @@ Ready for DPO fine-tuning — directly usable by model teams or to fine-tune Gem
 
 ---
 
-### Closing · The Flywheel
+### Slide 7 · The Flywheel
 
 > **"Here's why this compounds."**
 
@@ -111,10 +133,11 @@ We improve the agents. That improvement generates training signal. Better models
 | Title | 15s | 1 |
 | Problem question + flow | 30s | 2 |
 | Scale / stats | 30s | 3 |
-| Solution overview | 45s | 4 |
-| Live demo | 90s | 5 |
+| Solution overview | 30s | 4 |
+| Live demo | 75s | 4 |
+| Darwin Gödel Machine paper | 20s | 5 |
 | Three novel parts | 60s | 6 |
-| Flywheel close | 15s | 6 |
+| Flywheel close | 15s | 7 |
 | **Total** | **~5 min** | |
 
 ---
